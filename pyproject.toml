@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+testpaths = ["evals"]
+markers = [
+    "llm: calls the local Ollama model - slow, auto-skipped if Ollama isn't reachable",
+]

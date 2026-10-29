@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.streamlit/
+.DS_Store
+
+# Personal data - resume, applications, supporting docs. Never commit this.
+data/*
+!data/.gitkeep
+.pytest_cache/
