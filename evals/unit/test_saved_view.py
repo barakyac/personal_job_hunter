@@ -24,6 +24,7 @@ def test_paste_popover_creates_saved_position(monkeypatch):
     at = AppTest.from_function(_render_saved).run()
     assert not at.exception
 
+    at.text_input(key="paste_description_link").set_value("https://acme.example/jobs/1")
     at.text_area(key="paste_description_text").set_value("We are Acme, hiring a Backend Engineer.")
     at.button(key="create_from_paste_btn").click().run()
 
@@ -35,12 +36,24 @@ def test_paste_popover_creates_saved_position(monkeypatch):
     assert records[0]["location"] == "Remote"
     assert records[0]["salary"] == "100k"
     assert records[0]["description"] == "We are Acme, hiring a Backend Engineer."
-    assert records[0]["link"] == ""
+    assert records[0]["link"] == "https://acme.example/jobs/1"
+
+
+def test_paste_popover_rejects_missing_link():
+    at = AppTest.from_function(_render_saved).run()
+
+    at.text_area(key="paste_description_text").set_value("We are Acme.")
+    at.button(key="create_from_paste_btn").click().run()
+
+    assert not at.exception
+    assert storage.load_saved() == []
+    assert any("Add the job link first" in e.value for e in at.error)
 
 
 def test_paste_popover_rejects_empty_description():
     at = AppTest.from_function(_render_saved).run()
 
+    at.text_input(key="paste_description_link").set_value("https://acme.example/jobs/1")
     at.button(key="create_from_paste_btn").click().run()
 
     assert not at.exception
@@ -57,6 +70,7 @@ def test_paste_popover_surfaces_ollama_error(monkeypatch):
     monkeypatch.setattr(job_extract, "extract_fields", raising_extract)
 
     at = AppTest.from_function(_render_saved).run()
+    at.text_input(key="paste_description_link").set_value("https://acme.example/jobs/1")
     at.text_area(key="paste_description_text").set_value("Some posting")
     at.button(key="create_from_paste_btn").click().run()
 

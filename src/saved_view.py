@@ -66,11 +66,14 @@ def render() -> None:
                 st.rerun()
     with col_paste:
         with st.popover("Paste job description to create a saved position"):
+            link = st.text_input("Job link :red[*]", key="paste_description_link")
             pasted = st.text_area(
-                "Job description", height=200, key="paste_description_text"
+                "Job description :red[*]", height=200, key="paste_description_text"
             )
             if st.button(f"Create (Ollama {job_extract.DEFAULT_MODEL})", key="create_from_paste_btn"):
-                if not pasted.strip():
+                if not link.strip():
+                    st.error("Add the job link first.")
+                elif not pasted.strip():
                     st.error("Paste a job description first.")
                 else:
                     try:
@@ -83,7 +86,7 @@ def render() -> None:
                         records.append({
                             "company": fields["company"],
                             "title": fields["title"],
-                            "link": "",
+                            "link": link.strip(),
                             "location": fields["location"],
                             "salary": fields["salary"],
                             "date_saved": date.today().isoformat(),

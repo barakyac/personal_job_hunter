@@ -1,9 +1,15 @@
 import json
+import os
 from pathlib import Path
 
 import pandas as pd
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+# Streamlit's AppTest reloads local modules (including this one) between
+# runs as part of simulating reruns. A test's monkeypatch.setattr on an
+# already-imported DATA_DIR has no effect on a module object created by such
+# a reload, so tests isolate via this env var instead - it's read fresh on
+# every import/reload and keeps pointing at the test's tmp dir either way.
+DATA_DIR = Path(os.environ.get("JOB_HUNTER_DATA_DIR") or Path(__file__).resolve().parent.parent / "data")
 SAVED_FILE = DATA_DIR / "saved_positions.json"
 APPLIED_FILE = DATA_DIR / "applied_positions.json"
 RESUME_FILE = DATA_DIR / "resume.md"
