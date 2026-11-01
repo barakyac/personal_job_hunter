@@ -24,8 +24,8 @@ def test_paste_popover_creates_saved_position(monkeypatch):
     at = AppTest.from_function(_render_saved).run()
     assert not at.exception
 
-    at.text_input(key="paste_description_link").set_value("https://acme.example/jobs/1")
-    at.text_area(key="paste_description_text").set_value("We are Acme, hiring a Backend Engineer.")
+    at.text_input(key="paste_description_link_0").set_value("https://acme.example/jobs/1")
+    at.text_area(key="paste_description_text_0").set_value("We are Acme, hiring a Backend Engineer.")
     at.button(key="create_from_paste_btn").click().run()
 
     assert not at.exception
@@ -39,10 +39,29 @@ def test_paste_popover_creates_saved_position(monkeypatch):
     assert records[0]["link"] == "https://acme.example/jobs/1"
 
 
+def test_paste_popover_clears_its_fields_after_a_successful_create(monkeypatch):
+    monkeypatch.setattr(
+        job_extract,
+        "extract_fields",
+        lambda description: {"company": "Acme", "title": "Backend", "location": "", "salary": ""},
+    )
+
+    at = AppTest.from_function(_render_saved).run()
+    at.text_input(key="paste_description_link_0").set_value("https://acme.example/jobs/1")
+    at.text_area(key="paste_description_text_0").set_value("We are Acme, hiring.")
+    at.button(key="create_from_paste_btn").click().run()
+
+    assert not at.exception
+    # A fresh (unversioned-forward) widget should render empty, not keep the
+    # just-submitted link/description around for the next paste.
+    assert at.text_input(key="paste_description_link_1").value == ""
+    assert at.text_area(key="paste_description_text_1").value == ""
+
+
 def test_paste_popover_rejects_missing_link():
     at = AppTest.from_function(_render_saved).run()
 
-    at.text_area(key="paste_description_text").set_value("We are Acme.")
+    at.text_area(key="paste_description_text_0").set_value("We are Acme.")
     at.button(key="create_from_paste_btn").click().run()
 
     assert not at.exception
@@ -53,7 +72,7 @@ def test_paste_popover_rejects_missing_link():
 def test_paste_popover_rejects_empty_description():
     at = AppTest.from_function(_render_saved).run()
 
-    at.text_input(key="paste_description_link").set_value("https://acme.example/jobs/1")
+    at.text_input(key="paste_description_link_0").set_value("https://acme.example/jobs/1")
     at.button(key="create_from_paste_btn").click().run()
 
     assert not at.exception
@@ -70,8 +89,8 @@ def test_paste_popover_surfaces_ollama_error(monkeypatch):
     monkeypatch.setattr(job_extract, "extract_fields", raising_extract)
 
     at = AppTest.from_function(_render_saved).run()
-    at.text_input(key="paste_description_link").set_value("https://acme.example/jobs/1")
-    at.text_area(key="paste_description_text").set_value("Some posting")
+    at.text_input(key="paste_description_link_0").set_value("https://acme.example/jobs/1")
+    at.text_area(key="paste_description_text_0").set_value("Some posting")
     at.button(key="create_from_paste_btn").click().run()
 
     assert not at.exception

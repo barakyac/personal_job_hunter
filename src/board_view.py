@@ -74,7 +74,7 @@ def render(
 
     applied = storage.load_applied()
 
-    if not applied:
+    if not any((r.get("status") or "Applied") in stages for r in applied):
         st.info(empty_message)
         return
 

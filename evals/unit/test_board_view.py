@@ -20,6 +20,7 @@ def _render_outcome_board():
         stages=storage.OUTCOME_STATUSES,
         title="Final Outcome",
         caption="Applications that have reached a final outcome.",
+        empty_message="No applications have reached a final outcome yet.",
     )
 
 
@@ -27,6 +28,28 @@ def test_board_shows_empty_message_with_no_applied_positions():
     at = AppTest.from_function(_render_pipeline_board).run()
     assert not at.exception
     assert any("No applied positions yet" in i.value for i in at.info)
+
+
+def test_outcome_board_shows_empty_message_when_nothing_has_reached_a_final_outcome():
+    # Regression guard: the empty-state check used to test `not applied`
+    # globally, so a pipeline-stage record (e.g. "Applied") suppressed the
+    # Final Outcome board's empty message even though no record was
+    # actually in an outcome stage.
+    storage.save_applied([{"company": "Acme", "title": "Backend", "status": "Applied"}])
+
+    at = AppTest.from_function(_render_outcome_board).run()
+
+    assert not at.exception
+    assert any("No applications have reached a final outcome yet." in i.value for i in at.info)
+
+
+def test_outcome_board_hides_empty_message_once_something_reaches_an_outcome():
+    storage.save_applied([{"company": "Acme", "title": "Backend", "status": "Offer"}])
+
+    at = AppTest.from_function(_render_outcome_board).run()
+
+    assert not at.exception
+    assert not any("No applications have reached a final outcome yet." in i.value for i in at.info)
 
 
 def test_moving_card_to_rejected_captures_previous_stage():

@@ -66,9 +66,15 @@ def render() -> None:
                 st.rerun()
     with col_paste:
         with st.popover("Paste job description to create a saved position"):
-            link = st.text_input("Job link :red[*]", key="paste_description_link")
+            # Keys are versioned (like resume_view's supporting-document
+            # uploader) so a successful create can clear the fields by
+            # advancing to a fresh, empty widget instead of reusing one
+            # Streamlit won't let us overwrite via session_state after it's
+            # already been instantiated this run.
+            paste_version = st.session_state.get("paste_popover_version", 0)
+            link = st.text_input("Job link :red[*]", key=f"paste_description_link_{paste_version}")
             pasted = st.text_area(
-                "Job description :red[*]", height=200, key="paste_description_text"
+                "Job description :red[*]", height=200, key=f"paste_description_text_{paste_version}"
             )
             if st.button(f"Create (Ollama {job_extract.DEFAULT_MODEL})", key="create_from_paste_btn"):
                 if not link.strip():
@@ -94,6 +100,7 @@ def render() -> None:
                             "description": pasted,
                         })
                         storage.save_saved(records)
+                        st.session_state["paste_popover_version"] = paste_version + 1
                         st.success(f"Added {fields['company'] or 'position'} to Saved Positions.")
                         st.rerun()
 

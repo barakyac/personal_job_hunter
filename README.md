@@ -81,8 +81,6 @@ Docker. Use the Claude/ChatGPT provider instead when running containerized.
 
 ## Pages
 
-- **Dashboard** — counts by status and two charts: cumulative applications
-  over time, and a breakdown by status.
 - **Saved Positions** — editable table of saved roles (add/edit/delete rows
   directly), plus a control to move a role into Applied Positions.
 - **Applied Positions** — editable table of applied roles, including status.

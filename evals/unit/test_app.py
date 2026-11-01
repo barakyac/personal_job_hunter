@@ -29,3 +29,15 @@ def test_show_assistant_button_restores_chat():
     assert not at.exception
     assert at.chat_input
     assert not any(b.key == "show_assistant_btn" for b in at.button)
+
+
+def test_every_sidebar_page_renders_without_error():
+    # Regression guard: a page present in PAGES but broken (or a page that's
+    # supposed to be in PAGES but silently isn't wired in) should fail here.
+    at = AppTest.from_file(str(APP_PATH)).run()
+    page_options = list(at.sidebar.radio[0].options)
+
+    for page in page_options:
+        at = AppTest.from_file(str(APP_PATH)).run()
+        at.sidebar.radio[0].set_value(page).run()
+        assert not at.exception, f"page {page!r} raised: {at.exception}"

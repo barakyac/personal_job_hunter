@@ -15,8 +15,8 @@ not pixel-level design.
 
 1. **Page structure.** Views open with `st.header(...)`, often a
    `st.caption(...)` underneath explaining the page, and use `st.divider()`
-   between distinct sections (see `dashboard_view.render`,
-   `resume_view.render`). A new view that skips the header/caption pattern,
+   between distinct sections (see `resume_view.render`). A new view that
+   skips the header/caption pattern,
    or uses `st.title` where every other page uses `st.header`, will look
    inconsistent.
 
@@ -49,13 +49,14 @@ not pixel-level design.
    (e.g. company name alone when duplicates are allowed), will cause
    Streamlit state to leak between rows.
 
-6. **Chart styling matches `dashboard_view._style_layout` and
-   `storage.STATUS_COLORS`** (transparent background, muted-ink font,
-   no legend, gridlines only on y) - a new chart that doesn't call
-   `_style_layout` or introduces its own ad hoc color will look
-   inconsistent in both light and dark Streamlit themes. If the diff
-   doesn't touch an existing chart, this doesn't apply - don't invoke the
-   `dataviz` skill's full palette workflow for a change with no chart.
+6. **Status colors come from `storage.STATUS_COLORS`**, not an ad hoc
+   value - `board_view.py` already pulls stage-card colors from there. A
+   new piece of UI that needs a status-identity color (a badge, a chart, a
+   chip) should reuse that dict rather than inventing its own. There are no
+   charts in the app right now (Plotly was only used by the since-removed
+   dashboard page) - if one is added back, follow the `dataviz` skill's
+   palette workflow and keep it in its own `_style_layout`-style helper
+   rather than inlining styling into the render function.
 
 7. **The floating "Show Assistant" button's CSS hack
    (`div.st-key-show_assistant_btn` in `app.py`) is the one place fixed
