@@ -2,7 +2,7 @@ from datetime import date
 
 import streamlit as st
 
-from src import fit_analysis, ollama_client, storage
+from src import fit_analysis, job_extract, ollama_client, storage
 
 
 def render() -> None:
@@ -25,12 +25,13 @@ def render() -> None:
             "salary": st.column_config.TextColumn("Salary"),
             "date_saved": st.column_config.DateColumn("Date Saved", default=date.today()),
             "notes": st.column_config.TextColumn("Notes"),
+            "description": st.column_config.TextColumn("Job Description", width="large"),
             "fit_score": st.column_config.NumberColumn("Fit Score", min_value=1, max_value=10, step=1),
             "fit_notes": st.column_config.TextColumn("Fit Notes", width="large"),
         },
     )
 
-    col_save, col_calc = st.columns(2)
+    col_save, col_calc, col_paste = st.columns(3)
     with col_save:
         if st.button("Save changes", key="save_saved_btn"):
             records = storage.from_dataframe(edited, date_cols=["date_saved"])
@@ -63,6 +64,35 @@ def render() -> None:
                     st.warning(error)
                 st.success(f"Analyzed {len(records) - len(errors)} of {len(records)} position(s).")
                 st.rerun()
+    with col_paste:
+        with st.popover("Paste job description to create a saved position"):
+            pasted = st.text_area(
+                "Job description", height=200, key="paste_description_text"
+            )
+            if st.button(f"Create (Ollama {job_extract.DEFAULT_MODEL})", key="create_from_paste_btn"):
+                if not pasted.strip():
+                    st.error("Paste a job description first.")
+                else:
+                    try:
+                        with st.spinner(f"Extracting fields with Ollama {job_extract.DEFAULT_MODEL}..."):
+                            fields = job_extract.extract_fields(pasted)
+                    except ollama_client.OllamaError as exc:
+                        st.error(str(exc))
+                    else:
+                        records = storage.load_saved()
+                        records.append({
+                            "company": fields["company"],
+                            "title": fields["title"],
+                            "link": "",
+                            "location": fields["location"],
+                            "salary": fields["salary"],
+                            "date_saved": date.today().isoformat(),
+                            "notes": "",
+                            "description": pasted,
+                        })
+                        storage.save_saved(records)
+                        st.success(f"Added {fields['company'] or 'position'} to Saved Positions.")
+                        st.rerun()
 
     st.divider()
     st.subheader("Mark a position as applied")

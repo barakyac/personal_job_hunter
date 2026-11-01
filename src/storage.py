@@ -36,12 +36,12 @@ STATUS_COLORS = {
 
 SAVED_COLUMNS = [
     "company", "title", "link", "location", "salary", "date_saved", "notes",
-    "fit_score", "fit_notes",
+    "description", "fit_score", "fit_notes",
 ]
 APPLIED_COLUMNS = [
     "company", "title", "link", "location", "salary",
-    "date_saved", "date_applied", "status", "notes",
-    "fit_score", "fit_notes",
+    "date_saved", "date_applied", "status", "rejected_from_stage", "notes",
+    "description", "fit_score", "fit_notes",
 ]
 
 
@@ -146,10 +146,26 @@ def find_record_index(records: list[dict], company: str, title: str = "", link: 
     return None
 
 
+NUMERIC_COLUMNS = {"fit_score"}
+
+
 def to_dataframe(records: list[dict], columns: list[str], date_cols: list[str]) -> pd.DataFrame:
-    df = pd.DataFrame(records, columns=columns)
+    # A record missing a text column entirely (e.g. added via a path that
+    # doesn't set fit_notes) leaves that whole column NaN, which pandas
+    # infers as float64 - incompatible with a TextColumn's dtype check.
+    # Default every text column to "" so it stays an object/string column.
+    filled = [
+        {
+            col: (record.get(col) if col in NUMERIC_COLUMNS or col in date_cols else (record.get(col) or ""))
+            for col in columns
+        }
+        for record in records
+    ]
+    df = pd.DataFrame(filled, columns=columns)
     for col in date_cols:
         df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
+    for col in NUMERIC_COLUMNS & set(columns):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
 

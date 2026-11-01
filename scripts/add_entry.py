@@ -2,13 +2,14 @@
 """Append a saved or applied position to the dashboard's JSON files.
 
 Meant to be invoked by Claude on the user's behalf after fetching a job
-posting link and extracting the company/title from it, e.g.:
+posting link and extracting the company/title/description from it, e.g.:
 
     python scripts/add_entry.py saved --company Acme --title "Backend Engineer" \
-        --link https://acme.example/jobs/1 --location Remote --salary "140k"
+        --link https://acme.example/jobs/1 --location Remote --salary "140k" \
+        --description "Full job description text from the posting..."
 
     python scripts/add_entry.py applied --company Acme --title "Backend Engineer" \
-        --link https://acme.example/jobs/1 --status Applied
+        --link https://acme.example/jobs/1 --status Applied --description "..."
 """
 import argparse
 import sys
@@ -41,6 +42,7 @@ def main() -> None:
     parser.add_argument("--location", default="")
     parser.add_argument("--salary", default="")
     parser.add_argument("--notes", default="")
+    parser.add_argument("--description", default="", help="Full job description text from the posting")
     parser.add_argument("--date-saved", default=None, help="YYYY-MM-DD, defaults to today")
     parser.add_argument("--date-applied", default=None, help="YYYY-MM-DD, applied only, defaults to today")
     parser.add_argument("--status", default="Applied", choices=storage.STATUS_OPTIONS)
@@ -62,6 +64,7 @@ def main() -> None:
         "location": args.location,
         "salary": args.salary,
         "notes": args.notes,
+        "description": args.description,
     }
 
     if args.kind == "saved":

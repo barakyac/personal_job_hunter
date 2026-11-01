@@ -39,6 +39,42 @@ def test_analyze_many_updates_records_in_place(monkeypatch):
     assert records[1]["fit_score"] == 8
 
 
+def test_analyze_uses_stored_description_without_fetching(monkeypatch):
+    def fail_if_called(link, timeout=10):
+        raise AssertionError("fetch_posting_text should not be called when description is stored")
+
+    captured_prompts = []
+
+    def fake_chat_json(system, user, model=ollama_client.DEFAULT_MODEL):
+        captured_prompts.append(user)
+        return {"score": 7, "notes": "ok"}
+
+    monkeypatch.setattr(fit_analysis, "fetch_posting_text", fail_if_called)
+    monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
+
+    job = {"company": "Acme", "link": "https://acme.example/job", "description": "Stored posting text"}
+    fit_analysis.analyze("resume", job)
+
+    assert "Stored posting text" in captured_prompts[0]
+
+
+def test_analyze_fetches_when_no_description_stored(monkeypatch):
+    monkeypatch.setattr(fit_analysis, "fetch_posting_text", lambda link, timeout=10: "Freshly fetched text")
+
+    captured_prompts = []
+
+    def fake_chat_json(system, user, model=ollama_client.DEFAULT_MODEL):
+        captured_prompts.append(user)
+        return {"score": 7, "notes": "ok"}
+
+    monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
+
+    job = {"company": "Acme", "link": "https://acme.example/job"}
+    fit_analysis.analyze("resume", job)
+
+    assert "Freshly fetched text" in captured_prompts[0]
+
+
 def test_analyze_many_collects_errors_without_raising(monkeypatch):
     def raising_chat_json(system, user, model=ollama_client.DEFAULT_MODEL):
         raise ollama_client.OllamaError("unreachable")

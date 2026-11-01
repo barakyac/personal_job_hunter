@@ -63,7 +63,7 @@ def analyze_with_posting_text(
 
 
 def analyze(resume_text: str, job: dict, model: str = ollama_client.DEFAULT_MODEL) -> dict:
-    posting_text = fetch_posting_text(job.get("link", ""))
+    posting_text = job.get("description") or fetch_posting_text(job.get("link", ""))
     return analyze_with_posting_text(resume_text, job, posting_text, model=model)
 
 

@@ -30,7 +30,11 @@ def render() -> None:
             "status": st.column_config.SelectboxColumn(
                 "Status", options=storage.STATUS_OPTIONS, default="Applied"
             ),
+            "rejected_from_stage": st.column_config.TextColumn(
+                "Rejected From", disabled=True
+            ),
             "notes": st.column_config.TextColumn("Notes"),
+            "description": st.column_config.TextColumn("Job Description", width="large"),
         },
     )
 

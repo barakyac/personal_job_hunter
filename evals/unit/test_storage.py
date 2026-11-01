@@ -1,3 +1,5 @@
+import pandas as pd
+
 from src import storage
 
 
@@ -77,3 +79,20 @@ def test_from_dataframe_drops_rows_missing_required_col():
     out = storage.from_dataframe(df, date_cols=["date_saved"])
     assert len(out) == 1
     assert out[0]["company"] == "Acme"
+
+
+def test_to_dataframe_text_column_missing_everywhere_stays_string_dtype():
+    # Regression: a record added without a "fit_notes" key at all (e.g. via
+    # the paste-to-create flow) used to leave that whole column NaN/float64,
+    # which st.data_editor's TextColumn rejects with a StreamlitAPIException.
+    records = [{"company": "Acme", "title": "Backend", "date_saved": "2026-01-01"}]
+    df = storage.to_dataframe(records, storage.SAVED_COLUMNS, date_cols=["date_saved"])
+    assert not pd.api.types.is_float_dtype(df["fit_notes"])
+    assert df["fit_notes"].iloc[0] == ""
+
+
+def test_to_dataframe_numeric_column_missing_everywhere_stays_numeric_dtype():
+    records = [{"company": "Acme", "title": "Backend", "date_saved": "2026-01-01"}]
+    df = storage.to_dataframe(records, storage.SAVED_COLUMNS, date_cols=["date_saved"])
+    assert df["fit_score"].dtype.kind == "f"
+    assert pd.isna(df["fit_score"].iloc[0])

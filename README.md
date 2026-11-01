@@ -32,13 +32,16 @@ Positions page.
 ## Adding entries by sharing a link with Claude
 
 Give Claude a job posting URL in chat ("save this" or "I applied to this") and
-it will fetch the page, pull out the company and title, and append the entry
-for you via:
+it will fetch the page, pull out the company, title, and full job description,
+and append the entry for you via:
 
 ```bash
-python scripts/add_entry.py saved --company "..." --title "..." --link "..." [--location ...] [--salary ...]
-python scripts/add_entry.py applied --company "..." --title "..." --link "..." --status Applied
+python scripts/add_entry.py saved --company "..." --title "..." --link "..." [--location ...] [--salary ...] [--description "..."]
+python scripts/add_entry.py applied --company "..." --title "..." --link "..." --status Applied [--description "..."]
 ```
+
+The job description is stored with the entry and reused by "Calculate fit"
+instead of re-fetching the page.
 
 It skips adding a link that's already tracked (in either file) unless you
 pass `--force`.

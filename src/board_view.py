@@ -47,6 +47,8 @@ def render(
                     meta_bits = [b for b in [record.get("location"), record.get("date_applied")] if b]
                     if meta_bits:
                         st.caption(" · ".join(meta_bits))
+                    if stage == "Rejected" and record.get("rejected_from_stage"):
+                        st.caption(f"Rejected from: {record['rejected_from_stage']}")
 
                     new_stage = st.selectbox(
                         "Stage",
@@ -56,6 +58,10 @@ def render(
                         label_visibility="collapsed",
                     )
                     if new_stage != stage:
+                        if new_stage == "Rejected":
+                            applied[i]["rejected_from_stage"] = stage
+                        elif stage == "Rejected":
+                            applied[i].pop("rejected_from_stage", None)
                         applied[i]["status"] = new_stage
                         storage.save_applied(applied)
                         st.rerun()
