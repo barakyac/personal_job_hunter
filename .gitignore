@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .streamlit/
 .DS_Store
+.env
 
 # Personal data - resume, applications, supporting docs. Never commit this.
 data/*

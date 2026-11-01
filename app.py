@@ -1,7 +1,10 @@
 import streamlit as st
+from dotenv import load_dotenv
 
 from src import applied_view, board_view, chat_view, resume_view, saved_view
 from src import storage
+
+load_dotenv()  # picks up ANTHROPIC_API_KEY / OPENAI_API_KEY from a local .env, if present
 
 st.set_page_config(page_title="Job Hunter Dashboard", layout="wide")
 
