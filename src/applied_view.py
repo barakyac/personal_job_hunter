@@ -34,6 +34,7 @@ def render() -> None:
                 "Rejected From", disabled=True
             ),
             "notes": st.column_config.TextColumn("Notes"),
+            "call_notes": st.column_config.TextColumn("Call Notes", width="large"),
             "description": st.column_config.TextColumn("Job Description", width="large"),
         },
     )

@@ -95,3 +95,48 @@ def test_chat_json_raises_ollama_error_on_non_json_content(monkeypatch):
 
     with pytest.raises(ollama_client.OllamaError, match="non-JSON content"):
         ollama_client.chat_json("system prompt", "user prompt")
+
+
+def test_chat_returns_reply_text(monkeypatch):
+    def fake_post(url, json, timeout):
+        return FakeResponse("Here's some free-form advice.")
+
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    result = ollama_client.chat([{"role": "user", "content": "Any tips?"}])
+
+    assert result == "Here's some free-form advice."
+
+
+def test_chat_sends_messages_as_is_without_forcing_json_format(monkeypatch):
+    captured = {}
+
+    def fake_post(url, json, timeout):
+        captured["json"] = json
+        return FakeResponse("ok")
+
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    messages = [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "Hello!"},
+        {"role": "user", "content": "Any tips?"},
+    ]
+    ollama_client.chat(messages, model="qwen3.5:9b")
+
+    assert captured["json"]["messages"] == messages
+    assert captured["json"]["model"] == "qwen3.5:9b"
+    assert "format" not in captured["json"]
+    assert captured["json"]["stream"] is False
+    assert captured["json"]["keep_alive"] == "30m"
+
+
+def test_chat_raises_ollama_error_when_unreachable(monkeypatch):
+    def fake_post(url, json, timeout):
+        raise requests.ConnectionError("connection refused")
+
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    with pytest.raises(ollama_client.OllamaError, match="Could not reach Ollama"):
+        ollama_client.chat([{"role": "user", "content": "Hi"}])

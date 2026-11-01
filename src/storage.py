@@ -47,7 +47,7 @@ SAVED_COLUMNS = [
 APPLIED_COLUMNS = [
     "company", "title", "link", "location", "salary",
     "date_saved", "date_applied", "status", "rejected_from_stage", "notes",
-    "description", "fit_score", "fit_notes",
+    "call_notes", "description", "fit_score", "fit_notes",
 ]
 
 
