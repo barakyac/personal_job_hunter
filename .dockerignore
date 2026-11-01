@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.git/
+.github/
+.streamlit/
+.DS_Store
+.env
+.pytest_cache/
+.boost/
+.claude/
+data/*
+!data/.gitkeep
+evals/
+README.md

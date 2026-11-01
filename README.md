@@ -57,6 +57,28 @@ pytest evals/llm -m llm    # calls your local Ollama model; skipped if it's not 
 GitHub Actions (`.github/workflows/ci.yml`) runs `evals/unit` on every push and
 PR. `evals/llm` isn't run in CI since it needs a local Ollama instance.
 
+## Docker / CD
+
+`.github/workflows/cd.yml` runs unit evals, then builds and pushes an image to
+`ghcr.io/<owner>/<repo>` (tagged `latest` and with the commit SHA) on every
+push to `main`.
+
+To run the image yourself:
+
+```bash
+docker build -t job-hunter .
+docker run -p 8501:8501 \
+  -e ANTHROPIC_API_KEY=... \
+  -e OPENAI_API_KEY=... \
+  -v "$(pwd)/data:/app/data" \
+  job-hunter
+```
+
+Note: the Ollama chat provider needs `http://localhost:11434` reachable from
+inside the container (e.g. `--add-host=host.docker.internal:host-gateway`
+and point `ollama_client.OLLAMA_URL` at it) — it won't work out of the box in
+Docker. Use the Claude/ChatGPT provider instead when running containerized.
+
 ## Pages
 
 - **Dashboard** — counts by status and two charts: cumulative applications
