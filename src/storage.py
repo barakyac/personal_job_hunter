@@ -108,7 +108,10 @@ def load_resume_original_path() -> Path | None:
 def save_personal_file(file_bytes: bytes, filename: str) -> Path:
     """Store an original supporting document (cover letter, certs, notes, ...)."""
     PERSONAL_DIR.mkdir(parents=True, exist_ok=True)
-    path = PERSONAL_DIR / filename
+    safe_name = Path(filename).name
+    if not safe_name:
+        raise ValueError("filename must not be empty")
+    path = PERSONAL_DIR / safe_name
     path.write_bytes(file_bytes)
     return path
 
@@ -120,7 +123,7 @@ def list_personal_files() -> list[Path]:
 
 
 def delete_personal_file(filename: str) -> None:
-    path = PERSONAL_DIR / filename
+    path = PERSONAL_DIR / Path(filename).name
     if path.exists():
         path.unlink()
 
