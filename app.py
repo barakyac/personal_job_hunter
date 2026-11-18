@@ -1,10 +1,10 @@
 import streamlit as st
 from dotenv import load_dotenv
 
-from src import applied_view, board_view, chat_view, resume_view, saved_view
+from src import applied_view, board_view, chat_view, mail_view, resume_view, saved_view
 from src import storage
 
-load_dotenv()  # picks up ANTHROPIC_API_KEY / OPENAI_API_KEY from a local .env, if present
+load_dotenv()  # picks up ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_OAUTH_CLIENT_* from a local .env, if present
 
 st.set_page_config(page_title="Job Hunter Dashboard", layout="wide")
 
@@ -23,6 +23,7 @@ PAGES = {
     "Saved Positions": saved_view.render,
     "Edit Applications": applied_view.render,
     "Personal Work Info": resume_view.render,
+    "Mail Tracking": mail_view.render,
 }
 
 if "show_assistant" not in st.session_state:

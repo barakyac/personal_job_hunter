@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from src import chat_view, storage
+from src import chat_view, gmail_client, storage
 
 # Captured now, before any test's fixture can set JOB_HUNTER_DATA_DIR /
 # JOB_HUNTER_ENV_FILE or monkeypatch storage.DATA_DIR - always the real
@@ -68,6 +68,20 @@ def isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "RESUME_FILE", data_dir / "resume.md")
     monkeypatch.setattr(storage, "PERSONAL_DIR", data_dir / "personal")
     monkeypatch.setattr(storage, "PERSONAL_CONTEXT_FILE", data_dir / "personal_context.md")
+    monkeypatch.setattr(gmail_client, "DATA_DIR", data_dir)
+    monkeypatch.setattr(gmail_client, "TOKEN_FILE", data_dir / "gmail_token.json")
+    monkeypatch.setattr(gmail_client, "CONFIG_FILE", data_dir / "gmail_oauth_config.json")
+    # Isolate from whatever the developer machine running this test suite
+    # has configured for the real app - tests set these explicitly per test.
+    monkeypatch.delenv(gmail_client.CLIENT_ID_ENV_VAR, raising=False)
+    monkeypatch.delenv(gmail_client.CLIENT_SECRET_ENV_VAR, raising=False)
+    monkeypatch.delenv(gmail_client.REDIRECT_URI_ENV_VAR, raising=False)
+    monkeypatch.delenv(gmail_client.TOKEN_ENCRYPTION_KEY_ENV_VAR, raising=False)
+    # _get_secret() checks st.secrets before env vars - without this, a real
+    # .streamlit/secrets.toml on the machine running the tests (e.g. the
+    # developer's own OAuth config) would leak into test results instead of
+    # the env vars tests set explicitly.
+    monkeypatch.setattr(gmail_client.st, "secrets", {})
 
     env_file = tmp_path / "test.env"
     monkeypatch.setenv("JOB_HUNTER_ENV_FILE", str(env_file))
