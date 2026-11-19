@@ -135,6 +135,118 @@ def test_move_to_applied_positions_drops_posting_status():
     assert "posting_status" not in applied[0]
 
 
+def test_close_posting_button_marks_position_closed():
+    storage.save_saved([{
+        "company": "Acme", "title": "Backend", "link": "",
+        "posting_status": storage.POSTING_STATUS_OPEN, "date_saved": "2026-01-01",
+    }])
+
+    at = AppTest.from_function(_render_saved).run()
+    close_button = next(b for b in at.button if b.key == "close_posting_0")
+    close_button.click().run()
+
+    assert not at.exception
+    saved = storage.load_saved()
+    assert len(saved) == 1
+    assert saved[0]["posting_status"] == storage.POSTING_STATUS_CLOSED
+
+
+def test_close_posting_button_hidden_once_closed():
+    storage.save_saved([{
+        "company": "Acme", "title": "Backend", "link": "",
+        "posting_status": storage.POSTING_STATUS_CLOSED, "date_saved": "2026-01-01",
+    }])
+
+    at = AppTest.from_function(_render_saved).run()
+
+    assert not at.exception
+    assert not any(b.key == "close_posting_0" for b in at.button)
+    assert any("No open postings" in c.value for c in at.caption)
+
+
+def test_close_posting_only_shows_buttons_for_open_positions():
+    storage.save_saved([
+        {"company": "Acme", "title": "Backend", "link": "", "posting_status": storage.POSTING_STATUS_OPEN,
+         "date_saved": "2026-01-01"},
+        {"company": "Globex", "title": "Frontend", "link": "", "posting_status": storage.POSTING_STATUS_CLOSED,
+         "date_saved": "2026-01-01"},
+    ])
+
+    at = AppTest.from_function(_render_saved).run()
+
+    assert not at.exception
+    assert any(b.key == "close_posting_0" for b in at.button)
+    assert not any(b.key == "close_posting_1" for b in at.button)
+
+
+def test_closed_postings_sort_to_the_end_by_default():
+    # AppTest can't read st.data_editor's rendered grid directly, so this
+    # round-trips through an unmodified "Save changes" click instead: the
+    # editor hands back rows in the same order it was given, so the saved
+    # order reflects what the grid displayed.
+    storage.save_saved([
+        {"company": "Closed Co", "title": "A", "link": "", "posting_status": storage.POSTING_STATUS_CLOSED,
+         "date_saved": "2026-01-01"},
+        {"company": "Open Co", "title": "B", "link": "", "posting_status": storage.POSTING_STATUS_OPEN,
+         "date_saved": "2026-01-01"},
+    ])
+
+    at = AppTest.from_function(_render_saved).run()
+    at.button(key="save_saved_btn").click().run()
+
+    assert not at.exception
+    assert [r["company"] for r in storage.load_saved()] == ["Open Co", "Closed Co"]
+
+
+def test_hide_closed_toggle_not_shown_when_nothing_is_closed():
+    storage.save_saved([{"company": "Acme", "title": "Backend", "link": "", "date_saved": "2026-01-01"}])
+
+    at = AppTest.from_function(_render_saved).run()
+
+    assert not at.exception
+    assert not any(t.key == "hide_closed_postings" for t in at.toggle)
+
+
+def test_hide_closed_toggle_defaults_to_on():
+    storage.save_saved([
+        {"company": "Open Co", "title": "A", "link": "", "posting_status": storage.POSTING_STATUS_OPEN,
+         "date_saved": "2026-01-01"},
+        {"company": "Closed Co", "title": "B", "link": "", "posting_status": storage.POSTING_STATUS_CLOSED,
+         "date_saved": "2026-01-01"},
+    ])
+
+    at = AppTest.from_function(_render_saved).run()
+
+    assert not at.exception
+    assert at.toggle(key="hide_closed_postings").value is True
+
+    # A plain, unmodified save should still write both back - the default
+    # hide is a display-only filter, never a silent drop of closed rows.
+    at.button(key="save_saved_btn").click().run()
+    assert {r["company"] for r in storage.load_saved()} == {"Open Co", "Closed Co"}
+
+
+def test_hide_closed_toggle_filters_table_but_keeps_closed_rows_on_save():
+    storage.save_saved([
+        {"company": "Open Co", "title": "A", "link": "", "posting_status": storage.POSTING_STATUS_OPEN,
+         "date_saved": "2026-01-01"},
+        {"company": "Closed Co", "title": "B", "link": "", "posting_status": storage.POSTING_STATUS_CLOSED,
+         "date_saved": "2026-01-01"},
+    ])
+
+    at = AppTest.from_function(_render_saved).run()
+    at = at.toggle(key="hide_closed_postings").set_value(True).run()
+
+    assert not at.exception
+    at.button(key="save_saved_btn").click().run()
+
+    assert not at.exception
+    saved = storage.load_saved()
+    assert {r["company"] for r in saved} == {"Open Co", "Closed Co"}
+    closed = next(r for r in saved if r["company"] == "Closed Co")
+    assert closed["posting_status"] == storage.POSTING_STATUS_CLOSED
+
+
 def test_calculate_fit_requires_a_resume():
     storage.save_saved([{"company": "Acme", "title": "Backend", "link": "", "date_saved": "2026-01-01"}])
 

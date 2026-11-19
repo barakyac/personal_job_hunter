@@ -10,7 +10,27 @@ def render() -> None:
     st.caption("Roles you're considering but haven't applied to yet.")
 
     saved = storage.load_saved()
-    df = storage.to_dataframe(saved, storage.SAVED_COLUMNS, date_cols=["date_saved"])
+    # Closed postings sort to the end by default - everything still open
+    # (what the user actually needs to act on) stays up top, in its
+    # original relative order (Python's sort is stable).
+    saved = sorted(saved, key=lambda r: r.get("posting_status") == storage.POSTING_STATUS_CLOSED)
+
+    closed_count = sum(1 for r in saved if r.get("posting_status") == storage.POSTING_STATUS_CLOSED)
+    hide_closed = False
+    if closed_count:
+        hide_closed = st.toggle(f"Hide closed postings ({closed_count})", value=True, key="hide_closed_postings")
+
+    # Hidden rows never reach the editor, so they can't be edited here -
+    # they're carried through untouched and reattached wherever `edited` is
+    # turned back into a full record list, so hiding them never drops them
+    # from storage.
+    visible = [r for r in saved if not (hide_closed and r.get("posting_status") == storage.POSTING_STATUS_CLOSED)]
+    hidden = [r for r in saved if hide_closed and r.get("posting_status") == storage.POSTING_STATUS_CLOSED]
+
+    def records_from_editor(edited_df) -> list[dict]:
+        return storage.from_dataframe(edited_df, date_cols=["date_saved"]) + hidden
+
+    df = storage.to_dataframe(visible, storage.SAVED_COLUMNS, date_cols=["date_saved"])
 
     edited = st.data_editor(
         df,
@@ -38,13 +58,13 @@ def render() -> None:
     col_save, col_calc, col_paste = st.columns(3)
     with col_save:
         if st.button("Save changes", key="save_saved_btn"):
-            records = storage.from_dataframe(edited, date_cols=["date_saved"])
+            records = records_from_editor(edited)
             storage.save_saved(records)
             st.success(f"Saved {len(records)} position(s).")
             st.rerun()
     with col_calc:
         if st.button(f"Calculate fit (Ollama {ollama_client.DEFAULT_MODEL})", key="calc_fit_saved_btn"):
-            records = storage.from_dataframe(edited, date_cols=["date_saved"])
+            records = records_from_editor(edited)
             resume_text = storage.load_resume()
             targets = [i for i, r in enumerate(records) if r.get("fit_score") in (None, "")]
             if not resume_text.strip():
@@ -123,9 +143,32 @@ def render() -> None:
                         st.rerun()
 
     st.divider()
+    st.subheader("Close a posting")
+    st.caption("Quickly mark a saved posting as no longer accepting applications.")
+
+    records_for_status = records_from_editor(edited)
+    open_records = [
+        (i, r) for i, r in enumerate(records_for_status)
+        if r.get("posting_status", storage.POSTING_STATUS_OPEN) != storage.POSTING_STATUS_CLOSED
+    ]
+    if not open_records:
+        st.caption("No open postings.")
+    else:
+        for i, r in open_records:
+            close_col, label_col = st.columns([1, 6])
+            with close_col:
+                if st.button("Close", key=f"close_posting_{i}"):
+                    records_for_status[i]["posting_status"] = storage.POSTING_STATUS_CLOSED
+                    storage.save_saved(records_for_status)
+                    st.success(f"Marked {r['company']} as closed for applications.")
+                    st.rerun()
+            with label_col:
+                st.write(f"{r['company']} — {r['title'] or 'Untitled'}")
+
+    st.divider()
     st.subheader("Mark a position as applied")
 
-    records = storage.from_dataframe(edited, date_cols=["date_saved"])
+    records = records_from_editor(edited)
     if not records:
         st.info("Add a saved position above to move it into Applied Positions.")
         return
