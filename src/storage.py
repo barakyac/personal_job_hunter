@@ -40,8 +40,15 @@ STATUS_COLORS = {
     "Withdrawn": "#898781",               # muted
 }
 
+# Whether the job posting itself is still accepting applications - distinct
+# from APPLIED_COLUMNS' "status", which tracks this user's own pipeline
+# stage (Applied, Interview, ...) once they've applied.
+POSTING_STATUS_OPEN = "Open for applications"
+POSTING_STATUS_CLOSED = "Closed for applications"
+POSTING_STATUS_OPTIONS = [POSTING_STATUS_OPEN, POSTING_STATUS_CLOSED]
+
 SAVED_COLUMNS = [
-    "company", "title", "link", "location", "salary", "date_saved", "notes",
+    "company", "title", "link", "location", "salary", "posting_status", "date_saved", "notes",
     "description", "fit_score", "fit_notes",
 ]
 APPLIED_COLUMNS = [
@@ -157,15 +164,25 @@ def find_record_index(records: list[dict], company: str, title: str = "", link: 
 
 NUMERIC_COLUMNS = {"fit_score"}
 
+# Text columns whose missing/blank value should default to something other
+# than "" - e.g. a record saved before posting_status existed, or added via
+# a path that doesn't set it, is implicitly still open.
+COLUMN_DEFAULTS = {"posting_status": POSTING_STATUS_OPEN}
+
 
 def to_dataframe(records: list[dict], columns: list[str], date_cols: list[str]) -> pd.DataFrame:
     # A record missing a text column entirely (e.g. added via a path that
     # doesn't set fit_notes) leaves that whole column NaN, which pandas
     # infers as float64 - incompatible with a TextColumn's dtype check.
-    # Default every text column to "" so it stays an object/string column.
+    # Default every text column to "" (or its COLUMN_DEFAULTS entry) so it
+    # stays an object/string column.
     filled = [
         {
-            col: (record.get(col) if col in NUMERIC_COLUMNS or col in date_cols else (record.get(col) or ""))
+            col: (
+                record.get(col)
+                if col in NUMERIC_COLUMNS or col in date_cols
+                else (record.get(col) or COLUMN_DEFAULTS.get(col, ""))
+            )
             for col in columns
         }
         for record in records
@@ -191,5 +208,5 @@ def from_dataframe(df: pd.DataFrame, date_cols: list[str], required_col: str = "
                 record[col] = value.isoformat() if hasattr(value, "isoformat") else str(value)
         for key, value in record.items():
             if key not in date_cols and pd.isna(value):
-                record[key] = ""
+                record[key] = COLUMN_DEFAULTS.get(key, "")
     return records

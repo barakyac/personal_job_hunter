@@ -23,6 +23,10 @@ def render() -> None:
             "link": st.column_config.LinkColumn("Link"),
             "location": st.column_config.TextColumn("Location"),
             "salary": st.column_config.TextColumn("Salary"),
+            "posting_status": st.column_config.SelectboxColumn(
+                "Status", options=storage.POSTING_STATUS_OPTIONS, default=storage.POSTING_STATUS_OPEN,
+                required=True,
+            ),
             "date_saved": st.column_config.DateColumn("Date Saved", default=date.today()),
             "notes": st.column_config.TextColumn("Notes"),
             "description": st.column_config.TextColumn("Job Description", width="large"),
@@ -108,6 +112,7 @@ def render() -> None:
                             "link": link.strip(),
                             "location": fields["location"],
                             "salary": fields["salary"],
+                            "posting_status": storage.POSTING_STATUS_OPEN,
                             "date_saved": date.today().isoformat(),
                             "notes": "",
                             "description": pasted,
@@ -136,6 +141,7 @@ def render() -> None:
 
     if st.button("Move to Applied Positions", type="primary"):
         moved = records.pop(choice)
+        moved.pop("posting_status", None)
         moved["date_applied"] = applied_date.isoformat()
         moved["status"] = status
 

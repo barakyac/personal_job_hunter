@@ -583,6 +583,24 @@ def test_get_message_link_prefers_title_over_company_when_company_has_several_ca
     ) == "https://www.linkedin.com/comm/jobs/view/222/?trk=b"
 
 
+def test_get_message_link_ignores_title_shared_by_a_different_companys_card():
+    # company/title were extracted from a digest subject naming a
+    # DIFFERENT company ("X at OtherCo and N more jobs") - title belongs
+    # to OtherCo's own card, not Acme's. Trusting title alone would jump
+    # to OtherCo's link just because it's closer to that shared title
+    # text; this must stick to Acme's own card instead.
+    body = (
+        "Senior Engineer\nAcme\nView job: https://www.linkedin.com/comm/jobs/view/111/?trk=a\n\n"
+        "Backend Engineer\nOtherCo\nView job: https://www.linkedin.com/comm/jobs/view/222/?trk=b\n"
+    )
+    payload = {"mimeType": "text/plain", "body": {"data": _b64(body)}}
+    service = _FakeService({}, {"1": {"id": "1", "payload": payload}})
+
+    assert gmail_client.get_message_link("1", service=service, company="Acme", title="Backend Engineer") == (
+        "https://www.linkedin.com/comm/jobs/view/111/?trk=a"
+    )
+
+
 def test_get_message_link_returns_empty_when_ambiguous_and_company_not_found():
     # Two generic (non-job-board-shaped) links and a company name that
     # doesn't appear in the body at all - no safe way to pick, so this

@@ -501,6 +501,7 @@ def _add_opportunity_as_saved(msg: dict) -> tuple[str, bool]:
         "link": link,
         "location": fields["location"],
         "salary": fields["salary"],
+        "posting_status": storage.POSTING_STATUS_OPEN,
         "date_saved": dt.date.today().isoformat(),
         "notes": f"From job-alert email: {msg['subject']}",
         "description": msg["snippet"],

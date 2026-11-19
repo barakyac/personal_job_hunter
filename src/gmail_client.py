@@ -472,22 +472,40 @@ def _candidate_links(body_text: str) -> list[tuple[int, str]]:
     return candidates
 
 
+# Substrings that mark a nearby text match as not being real, visible card
+# content, so it's excluded as an anchor in _anchor_positions():
+# - "schemas-"/"xmlns": Outlook-compatibility markup repeats
+#   xmlns:v="urn:schemas-microsoft-com:vml" once per card in some HTML
+#   templates - a false "Microsoft" hit next to every card, not just that
+#   company's own.
+# - "preheader"/"skip-in-text": a hidden preview-text div (e.g.
+#   data-email-preheader="true" or data-skip-in-text="true") often repeats
+#   the digest's lead company/title as one combined phrase ("Acme Field
+#   Technician") even though the actual card below splits them onto
+#   separate lines ("Field Technician" / "Acme") - so this phrase would
+#   otherwise only ever match there, never at the real card.
+_ANCHOR_EXCLUDE_MARKERS = ("schemas-", "xmlns", "preheader", "skip-in-text")
+
+
 def _anchor_positions(body_lower: str, text: str) -> list[int]:
     """Character offsets of every mention of `text` in the (already
-    lowercased) body that looks like real card content rather than markup/
-    namespace soup. Outlook-compatibility markup repeats
-    xmlns:v="urn:schemas-microsoft-com:vml" once per card in some HTML
-    templates - a false "Microsoft" hit next to every card, not just that
-    company's own - so a mention sitting right next to "schemas-"/"xmlns"
-    is excluded."""
+    lowercased) body that looks like real card content rather than
+    markup/namespace soup or hidden preview text."""
     text = text.strip().lower()
     if not text:
         return []
     return [
         m.start()
         for m in re.finditer(re.escape(text), body_lower)
-        if not any(marker in body_lower[max(0, m.start() - 20): m.end() + 20] for marker in ("schemas-", "xmlns"))
+        if not any(marker in body_lower[max(0, m.start() - 60): m.end() + 20] for marker in _ANCHOR_EXCLUDE_MARKERS)
     ]
+
+
+# How close (in characters) a company/title mention must sit to a
+# candidate link to count as "belongs to this link's own card" in
+# _best_job_link. Wide enough to span one HTML job card's markup, tight
+# enough not to reach into a neighboring card in the same digest.
+_CARD_WINDOW = 900
 
 
 def _best_job_link(body_text: str, company: str = "", title: str = "") -> str:
@@ -497,19 +515,31 @@ def _best_job_link(body_text: str, company: str = "", title: str = "") -> str:
     A LinkedIn/Glassdoor job-alert digest bundles several postings in one
     email, so a link is only trusted there when it matches a known
     job-board URL shape (_JOB_BOARD_MARKERS) - with more than one such
-    link, the one positioned closest to an anchor's mention in the body
-    wins (by character distance, over every occurrence of the anchor, not
+    link, disambiguation requires `company`: without any mention of it in
+    the body, there's no safe way to tell the postings apart, so this
+    returns "". With it, the link closest to any mention of `company`
+    wins (by character distance, over every occurrence of the name, not
     just the first - a digest's hidden preheader text ("Acme is
-    hiring...") often repeats the company name far from the actual job
-    card). `title` is tried as the anchor before `company`, since a single
-    company can have several different postings in the same digest (and
-    thus several cards this company name alone can't tell apart), while
-    the exact job title is specific to one card. Outside those two boards
-    (e.g. a direct ATS application-confirmation email), there's no shape
-    to check, so a link is only used when it's the single remaining
-    candidate after skipping assets/footers - with several, and no anchor
-    that disambiguates them, there's no safe way to tell which one is
-    right, and this returns "" rather than guess."""
+    hiring...") often repeats it far from the actual job card).
+
+    A single company can still have several different postings in the
+    same digest, which `company` alone can't tell apart. `title` helps
+    there, but only when it sits within _CARD_WINDOW of the *same* link
+    that `company` is also close to - i.e. both signals point at one
+    card together. An exact title (e.g. "Software Engineer III") is
+    common enough to also be some other company's title in the same
+    digest, so title is never trusted as a disambiguator on its own: a
+    link with company nearby but title far away, or vice versa, only
+    means one of the two fields doesn't belong to this card (a known
+    failure mode of the subject line this record's title/company were
+    extracted from, e.g. "Software Engineer III at SailPoint ... and 11
+    more jobs" naming a different company than the one picked out as
+    `company`) - not that this is the right link.
+
+    Outside LinkedIn/Glassdoor (e.g. a direct ATS application-confirmation
+    email), there's no known URL shape to check, so a link is only used
+    when it's the single remaining candidate after skipping assets/
+    footers - with several, this returns "" rather than guess."""
     candidates = _candidate_links(body_text)
     if not candidates:
         return ""
@@ -517,20 +547,29 @@ def _best_job_link(body_text: str, company: str = "", title: str = "") -> str:
     board_candidates = [
         (pos, url) for pos, url in candidates if any(marker in url.lower() for marker in _JOB_BOARD_MARKERS)
     ]
-    if board_candidates:
-        if len(board_candidates) == 1:
-            return board_candidates[0][1]
-        body_lower = body_text.lower()
-        for anchor in (title, company):
-            positions = _anchor_positions(body_lower, anchor)
-            if positions:
-                _, url = min(
-                    (abs(link_pos - pos), url) for link_pos, url in board_candidates for pos in positions
-                )
-                return url
+    if not board_candidates:
+        return candidates[0][1] if len(candidates) == 1 else ""
+    if len(board_candidates) == 1:
+        return board_candidates[0][1]
+
+    body_lower = body_text.lower()
+    company_positions = _anchor_positions(body_lower, company)
+    if not company_positions:
         return ""
 
-    return candidates[0][1] if len(candidates) == 1 else ""
+    def nearest_distance(positions: list[int], pos: int) -> float:
+        return min((abs(pos - p) for p in positions), default=float("inf"))
+
+    title_positions = _anchor_positions(body_lower, title) if title else []
+    if title_positions:
+        pos, url = min(
+            board_candidates,
+            key=lambda c: max(nearest_distance(company_positions, c[0]), nearest_distance(title_positions, c[0])),
+        )
+        if max(nearest_distance(company_positions, pos), nearest_distance(title_positions, pos)) <= _CARD_WINDOW:
+            return url
+
+    return min(board_candidates, key=lambda c: nearest_distance(company_positions, c[0]))[1]
 
 
 def get_message_link(msg_id: str, service=None, company: str = "", title: str = "") -> str:

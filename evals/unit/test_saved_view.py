@@ -37,6 +37,7 @@ def test_paste_popover_creates_saved_position(monkeypatch):
     assert records[0]["salary"] == "100k"
     assert records[0]["description"] == "We are Acme, hiring a Backend Engineer."
     assert records[0]["link"] == "https://acme.example/jobs/1"
+    assert records[0]["posting_status"] == storage.POSTING_STATUS_OPEN
 
 
 def test_paste_popover_clears_its_fields_after_a_successful_create(monkeypatch):
@@ -114,6 +115,24 @@ def test_move_to_applied_positions_transfers_record():
     assert applied[0]["company"] == "Acme"
     assert applied[0]["status"] == "Applied"
     assert "date_applied" in applied[0]
+
+
+def test_move_to_applied_positions_drops_posting_status():
+    # "Open/Closed for applications" describes the job posting, not this
+    # user's own pipeline stage (APPLIED_COLUMNS' separate "status") - it
+    # has no meaning once the position has moved to Applied.
+    storage.save_saved([{
+        "company": "Acme", "title": "Backend", "link": "",
+        "posting_status": storage.POSTING_STATUS_OPEN, "date_saved": "2026-01-01",
+    }])
+
+    at = AppTest.from_function(_render_saved).run()
+    move_button = next(b for b in at.button if b.label == "Move to Applied Positions")
+    move_button.click().run()
+
+    assert not at.exception
+    applied = storage.load_applied()
+    assert "posting_status" not in applied[0]
 
 
 def test_calculate_fit_requires_a_resume():

@@ -104,3 +104,25 @@ def test_to_dataframe_numeric_column_missing_everywhere_stays_numeric_dtype():
     df = storage.to_dataframe(records, storage.SAVED_COLUMNS, date_cols=["date_saved"])
     assert df["fit_score"].dtype.kind == "f"
     assert pd.isna(df["fit_score"].iloc[0])
+
+
+def test_to_dataframe_defaults_posting_status_to_open_when_missing():
+    # A record saved before posting_status existed, or added via a path
+    # that doesn't set it, is implicitly still open - not blank.
+    records = [{"company": "Acme", "title": "Backend", "date_saved": "2026-01-01"}]
+    df = storage.to_dataframe(records, storage.SAVED_COLUMNS, date_cols=["date_saved"])
+    assert df["posting_status"].iloc[0] == storage.POSTING_STATUS_OPEN
+
+
+def test_to_dataframe_preserves_explicit_posting_status():
+    records = [{"company": "Acme", "posting_status": storage.POSTING_STATUS_CLOSED, "date_saved": "2026-01-01"}]
+    df = storage.to_dataframe(records, storage.SAVED_COLUMNS, date_cols=["date_saved"])
+    assert df["posting_status"].iloc[0] == storage.POSTING_STATUS_CLOSED
+
+
+def test_from_dataframe_defaults_posting_status_to_open_when_blank():
+    records = [{"company": "Acme", "date_saved": "2026-01-01"}]
+    df = storage.to_dataframe(records, storage.SAVED_COLUMNS, date_cols=["date_saved"])
+    df["posting_status"] = None
+    out = storage.from_dataframe(df, date_cols=["date_saved"])
+    assert out[0]["posting_status"] == storage.POSTING_STATUS_OPEN

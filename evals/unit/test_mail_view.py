@@ -834,6 +834,7 @@ def test_adding_opportunity_creates_saved_position_and_marks_added(monkeypatch):
     assert saved[0]["company"] == "Acme"
     assert saved[0]["title"] == "Backend Engineer"
     assert saved[0]["link"] == ""
+    assert saved[0]["posting_status"] == storage.POSTING_STATUS_OPEN
     assert "Backend Engineer at Acme" in saved[0]["notes"]
     assert not any(b.key == "add_opportunity_opp-1" for b in at.button)
     assert any("Added to Saved Positions" in c.value for c in at.caption)
