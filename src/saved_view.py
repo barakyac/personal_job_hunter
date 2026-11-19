@@ -40,7 +40,7 @@ def render() -> None:
         column_config={
             "company": st.column_config.TextColumn("Company", required=True),
             "title": st.column_config.TextColumn("Title"),
-            "link": st.column_config.LinkColumn("Link"),
+            "link": st.column_config.LinkColumn("Link", display_text="Open ↗"),
             "location": st.column_config.TextColumn("Location"),
             "salary": st.column_config.TextColumn("Salary"),
             "posting_status": st.column_config.SelectboxColumn(
@@ -55,13 +55,17 @@ def render() -> None:
         },
     )
 
+    unsaved = not edited.equals(df)
+
     col_save, col_calc, col_paste = st.columns(3)
     with col_save:
-        if st.button("Save changes", key="save_saved_btn"):
+        if st.button("Save changes", key="save_saved_btn", type="primary"):
             records = records_from_editor(edited)
             storage.save_saved(records)
             st.success(f"Saved {len(records)} position(s).")
             st.rerun()
+        if unsaved:
+            st.caption("Unsaved changes")
     with col_calc:
         if st.button(f"Calculate fit (Ollama {ollama_client.DEFAULT_MODEL})", key="calc_fit_saved_btn"):
             records = records_from_editor(edited)

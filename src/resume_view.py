@@ -32,7 +32,7 @@ def render() -> None:
 
     st.text_area("Resume", height=400, key=RESUME_KEY, label_visibility="collapsed")
 
-    if st.button("Save resume"):
+    if st.button("Save resume", type="primary"):
         storage.save_resume(st.session_state[RESUME_KEY])
         st.success("Resume saved.")
 

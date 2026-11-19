@@ -22,7 +22,7 @@ def render() -> None:
         column_config={
             "company": st.column_config.TextColumn("Company", required=True),
             "title": st.column_config.TextColumn("Title"),
-            "link": st.column_config.LinkColumn("Link"),
+            "link": st.column_config.LinkColumn("Link", display_text="Open ↗"),
             "location": st.column_config.TextColumn("Location"),
             "salary": st.column_config.TextColumn("Salary"),
             "date_saved": st.column_config.DateColumn("Date Saved"),
@@ -39,7 +39,9 @@ def render() -> None:
         },
     )
 
-    if st.button("Save changes", key="save_applied_btn"):
+    unsaved = not edited.equals(df)
+
+    if st.button("Save changes", key="save_applied_btn", type="primary"):
         records = storage.from_dataframe(edited, date_cols=["date_saved", "date_applied"])
         for record in records:
             if not record.get("status"):
@@ -47,3 +49,5 @@ def render() -> None:
         storage.save_applied(records)
         st.success(f"Saved {len(records)} position(s).")
         st.rerun()
+    if unsaved:
+        st.caption("Unsaved changes")
