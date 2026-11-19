@@ -38,15 +38,24 @@ DEFAULT_REDIRECT_URI = "http://localhost:8501"
 #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 TOKEN_ENCRYPTION_KEY_ENV_VAR = "GMAIL_TOKEN_ENCRYPTION_KEY"
 
-# Same reload-safe override pattern as storage.py's JOB_HUNTER_DATA_DIR -
-# read fresh on every import so tests can point these at a throwaway dir.
-DATA_DIR = Path(os.environ.get("JOB_HUNTER_DATA_DIR") or Path(__file__).resolve().parent.parent / "data")
-TOKEN_FILE = DATA_DIR / "gmail_token.json"
+def data_dir() -> Path:
+    """Resolved fresh on every call, like src/storage.py's data_dir() of the
+    same name - see that function's docstring for why a module-level
+    constant computed once at import time is a trap."""
+    return Path(os.environ.get("JOB_HUNTER_DATA_DIR") or Path(__file__).resolve().parent.parent / "data")
 
-# Local, gitignored (covered by data/*) fallback for the three values above
-# when there's no .streamlit/secrets.toml - written by the in-app "Set up
-# Gmail connection" form (see save_oauth_config), never by hand.
-CONFIG_FILE = DATA_DIR / "gmail_oauth_config.json"
+
+def token_file() -> Path:
+    return data_dir() / "gmail_token.json"
+
+
+def config_file() -> Path:
+    """Local, gitignored (covered by data/*) fallback for the three OAuth
+    values above when there's no .streamlit/secrets.toml - written by the
+    in-app "Set up Gmail connection" form (see save_oauth_config), never by
+    hand."""
+    return data_dir() / "gmail_oauth_config.json"
+
 
 LOCALHOST_HOSTNAMES = {"localhost", "127.0.0.1", "::1"}
 
@@ -99,10 +108,10 @@ class GmailConfigError(GmailError):
 
 
 def _load_persisted_config() -> dict:
-    if not CONFIG_FILE.exists():
+    if not config_file().exists():
         return {}
     try:
-        return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        return json.loads(config_file().read_text(encoding="utf-8"))
     except Exception:
         return {}
 
@@ -149,7 +158,7 @@ def is_app_configured() -> bool:
 
 
 def is_connected() -> bool:
-    return TOKEN_FILE.exists()
+    return token_file().exists()
 
 
 def is_localhost_request() -> bool:
@@ -172,12 +181,12 @@ def is_localhost_request() -> bool:
 
 
 def has_persisted_config() -> bool:
-    return CONFIG_FILE.exists()
+    return config_file().exists()
 
 
 def save_oauth_config(raw_client_id: str, raw_client_secret: str) -> None:
     """Validate and persist the app operator's Google OAuth client
-    credentials to CONFIG_FILE, generating a token-encryption key if one
+    credentials to config_file(), generating a token-encryption key if one
     isn't already configured anywhere (secrets/env/this file). Takes effect
     immediately for the rest of this process and across restarts, since
     _get_secret() reads this file as its last fallback on every call - no
@@ -199,18 +208,18 @@ def save_oauth_config(raw_client_id: str, raw_client_secret: str) -> None:
     if not token_encryption_key():
         config[TOKEN_ENCRYPTION_KEY_ENV_VAR] = Fernet.generate_key().decode("utf-8")
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(json.dumps(config), encoding="utf-8")
+    data_dir().mkdir(parents=True, exist_ok=True)
+    config_file().write_text(json.dumps(config), encoding="utf-8")
 
 
 def clear_oauth_config() -> None:
     """"Reset Gmail setup": clear the locally-saved OAuth client config and
     any saved token, since a token is only usable with the client/key it
     was created under. Leaves st.secrets/env-based config (a real deployed
-    setup) untouched - there's nothing in CONFIG_FILE to clear in that
+    setup) untouched - there's nothing in config_file() to clear in that
     case."""
-    CONFIG_FILE.unlink(missing_ok=True)
-    TOKEN_FILE.unlink(missing_ok=True)
+    config_file().unlink(missing_ok=True)
+    token_file().unlink(missing_ok=True)
 
 
 def _fernet() -> Fernet:
@@ -232,8 +241,8 @@ def _fernet() -> Fernet:
 
 
 def _write_encrypted_token(creds: Credentials) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    TOKEN_FILE.write_bytes(_fernet().encrypt(creds.to_json().encode("utf-8")))
+    data_dir().mkdir(parents=True, exist_ok=True)
+    token_file().write_bytes(_fernet().encrypt(creds.to_json().encode("utf-8")))
 
 
 def save_token(token: dict) -> None:
@@ -262,24 +271,24 @@ EXPIRED_CONNECTION_MESSAGE = 'Your Gmail connection expired, click "Connect with
 
 
 def _load_credentials() -> Credentials:
-    if not TOKEN_FILE.exists():
+    if not token_file().exists():
         raise GmailAuthError(
             "Gmail isn't connected yet. Click \"Connect with Google\" on the Mail Tracking page."
         )
     fernet = _fernet()
     try:
-        info = json.loads(fernet.decrypt(TOKEN_FILE.read_bytes()).decode("utf-8"))
+        info = json.loads(fernet.decrypt(token_file().read_bytes()).decode("utf-8"))
         creds = Credentials.from_authorized_user_info(info, SCOPES)
     except Exception as exc:
         # A corrupted or undecryptable token is just as unusable as a
         # revoked one - clear it so the user sees "Connect with Google"
         # again instead of hitting this same error on every page load.
-        TOKEN_FILE.unlink(missing_ok=True)
+        token_file().unlink(missing_ok=True)
         raise GmailAuthError(EXPIRED_CONNECTION_MESSAGE) from exc
 
     if creds.expired:
         if not creds.refresh_token:
-            TOKEN_FILE.unlink(missing_ok=True)
+            token_file().unlink(missing_ok=True)
             raise GmailAuthError(EXPIRED_CONNECTION_MESSAGE)
         try:
             creds.refresh(Request())
@@ -287,7 +296,7 @@ def _load_credentials() -> Credentials:
             # Covers a revoked grant (invalid_grant) as well as any other
             # refresh failure - from the user's side both just mean
             # reconnecting is required.
-            TOKEN_FILE.unlink(missing_ok=True)
+            token_file().unlink(missing_ok=True)
             raise GmailAuthError(EXPIRED_CONNECTION_MESSAGE) from exc
         _write_encrypted_token(creds)
     return creds
@@ -299,17 +308,17 @@ def disconnect() -> None:
     clearing local state) and delete it locally. The app's own OAuth client
     config (secrets/env) is untouched, since that's this app's registration
     with Google, not the user's personal grant."""
-    if not TOKEN_FILE.exists():
+    if not token_file().exists():
         return
     try:
-        info = json.loads(_fernet().decrypt(TOKEN_FILE.read_bytes()).decode("utf-8"))
+        info = json.loads(_fernet().decrypt(token_file().read_bytes()).decode("utf-8"))
         creds = Credentials.from_authorized_user_info(info, SCOPES)
         token = creds.refresh_token or creds.token
         if token:
             requests.post(REVOKE_URL, params={"token": token}, timeout=5)
     except Exception:
         pass
-    TOKEN_FILE.unlink(missing_ok=True)
+    token_file().unlink(missing_ok=True)
 
 
 def get_service():

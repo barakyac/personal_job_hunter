@@ -13,8 +13,8 @@ def _render_mail():
 def _connect() -> None:
     """Mark Gmail as already connected for tests that only care about the
     post-connect scan flow."""
-    gmail_client.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    gmail_client.TOKEN_FILE.write_text("{}", encoding="utf-8")
+    gmail_client.data_dir().mkdir(parents=True, exist_ok=True)
+    gmail_client.token_file().write_text("{}", encoding="utf-8")
 
 
 def _configure_app(monkeypatch) -> None:
@@ -81,7 +81,7 @@ def test_connect_popup_result_saves_token_and_reaches_connected_state(monkeypatc
     at = AppTest.from_function(_render_mail).run()
 
     assert not at.exception
-    assert gmail_client.TOKEN_FILE.exists()
+    assert gmail_client.token_file().exists()
 
 
 def test_connect_popup_shows_friendly_error_when_no_refresh_token(monkeypatch):
@@ -98,7 +98,7 @@ def test_connect_popup_shows_friendly_error_when_no_refresh_token(monkeypatch):
 
     assert not at.exception
     assert any("refresh token" in e.value for e in at.error)
-    assert not gmail_client.TOKEN_FILE.exists()
+    assert not gmail_client.token_file().exists()
 
 
 def test_status_bar_shows_connected_email(monkeypatch):
@@ -155,7 +155,7 @@ def test_reconnect_popup_result_reruns_and_stays_connected(monkeypatch):
     at = AppTest.from_function(_render_mail).run()
 
     assert not at.exception
-    decrypted = gmail_client._fernet().decrypt(gmail_client.TOKEN_FILE.read_bytes())
+    decrypted = gmail_client._fernet().decrypt(gmail_client.token_file().read_bytes())
     assert "rt2" in decrypted.decode("utf-8")
 
 
@@ -169,7 +169,7 @@ def test_disconnect_button_clears_connection_and_shows_connect_form(monkeypatch)
     monkeypatch.setattr(gmail_client, "search_messages", lambda *a, **k: [])
 
     def fake_disconnect():
-        gmail_client.TOKEN_FILE.unlink(missing_ok=True)
+        gmail_client.token_file().unlink(missing_ok=True)
 
     monkeypatch.setattr(gmail_client, "disconnect", fake_disconnect)
 
@@ -177,7 +177,7 @@ def test_disconnect_button_clears_connection_and_shows_connect_form(monkeypatch)
     at.button(key="disconnect_gmail_btn").click().run()
 
     assert not at.exception
-    assert not gmail_client.TOKEN_FILE.exists()
+    assert not gmail_client.token_file().exists()
     assert any("Connect Gmail" in s.value for s in at.subheader)
 
 
@@ -819,8 +819,8 @@ def test_adding_opportunity_creates_saved_position_and_marks_added(monkeypatch):
 
     monkeypatch.setattr(
         job_extract,
-        "extract_fields",
-        lambda description, model=job_extract.DEFAULT_MODEL: {
+        "extract_opportunity_fields",
+        lambda subject, snippet, model=job_extract.DEFAULT_MODEL: {
             "company": "Acme", "title": "Backend Engineer", "location": "Remote", "salary": ""
         },
     )
@@ -845,8 +845,8 @@ def test_adding_opportunity_fetches_link_from_message_body(monkeypatch):
 
     monkeypatch.setattr(
         job_extract,
-        "extract_fields",
-        lambda description, model=job_extract.DEFAULT_MODEL: {
+        "extract_opportunity_fields",
+        lambda subject, snippet, model=job_extract.DEFAULT_MODEL: {
             "company": "Acme", "title": "Backend Engineer", "location": "Remote", "salary": ""
         },
     )
@@ -867,8 +867,8 @@ def test_adding_opportunity_falls_back_to_blank_link_when_lookup_fails(monkeypat
 
     monkeypatch.setattr(
         job_extract,
-        "extract_fields",
-        lambda description, model=job_extract.DEFAULT_MODEL: {
+        "extract_opportunity_fields",
+        lambda subject, snippet, model=job_extract.DEFAULT_MODEL: {
             "company": "Acme", "title": "Backend Engineer", "location": "Remote", "salary": ""
         },
     )
@@ -901,10 +901,10 @@ def test_dismissing_opportunity_hides_action_buttons_without_saving(monkeypatch)
 def test_adding_opportunity_shows_error_when_ollama_unreachable(monkeypatch):
     _connect_with_one_opportunity(monkeypatch)
 
-    def raising_extract(description, model=job_extract.DEFAULT_MODEL):
+    def raising_extract(subject, snippet, model=job_extract.DEFAULT_MODEL):
         raise ollama_client.OllamaError("Could not reach Ollama")
 
-    monkeypatch.setattr(job_extract, "extract_fields", raising_extract)
+    monkeypatch.setattr(job_extract, "extract_opportunity_fields", raising_extract)
 
     at = AppTest.from_function(_render_mail).run()
     at = at.button(key="add_opportunity_opp-1").click().run()
@@ -1108,9 +1108,9 @@ def test_save_all_adds_every_pending_opportunity(monkeypatch):
 
     monkeypatch.setattr(
         job_extract,
-        "extract_fields",
-        lambda description, model=job_extract.DEFAULT_MODEL: {
-            "company": "Acme" if "Acme" in description else "Globex",
+        "extract_opportunity_fields",
+        lambda subject, snippet, model=job_extract.DEFAULT_MODEL: {
+            "company": "Acme" if "Acme" in subject else "Globex",
             "title": "Engineer",
             "location": "",
             "salary": "",
@@ -1136,11 +1136,11 @@ def test_save_all_skips_already_handled_opportunities(monkeypatch):
 
     requested = []
 
-    def fake_extract(description, model=job_extract.DEFAULT_MODEL):
-        requested.append(description)
+    def fake_extract(subject, snippet, model=job_extract.DEFAULT_MODEL):
+        requested.append(subject)
         return {"company": "Acme", "title": "Engineer", "location": "", "salary": ""}
 
-    monkeypatch.setattr(job_extract, "extract_fields", fake_extract)
+    monkeypatch.setattr(job_extract, "extract_opportunity_fields", fake_extract)
 
     at = at.button(key="add_all_opportunities_btn").click().run()
 
@@ -1155,12 +1155,12 @@ def test_save_all_skips_already_handled_opportunities(monkeypatch):
 def test_save_all_continues_past_a_failure_and_reports_it(monkeypatch):
     _connect_with_two_opportunities(monkeypatch)
 
-    def flaky_extract(description, model=job_extract.DEFAULT_MODEL):
-        if "Acme" in description:
+    def flaky_extract(subject, snippet, model=job_extract.DEFAULT_MODEL):
+        if "Acme" in subject:
             raise ollama_client.OllamaError("Could not reach Ollama")
         return {"company": "Globex", "title": "Engineer", "location": "", "salary": ""}
 
-    monkeypatch.setattr(job_extract, "extract_fields", flaky_extract)
+    monkeypatch.setattr(job_extract, "extract_opportunity_fields", flaky_extract)
 
     at = AppTest.from_function(_render_mail).run()
     at = at.button(key="add_all_opportunities_btn").click().run()
@@ -1475,8 +1475,8 @@ def test_adding_opportunity_already_saved_skips_without_duplicating(monkeypatch)
 
     monkeypatch.setattr(
         job_extract,
-        "extract_fields",
-        lambda description, model=job_extract.DEFAULT_MODEL: {
+        "extract_opportunity_fields",
+        lambda subject, snippet, model=job_extract.DEFAULT_MODEL: {
             "company": "Acme", "title": "Backend Engineer", "location": "", "salary": ""
         },
     )
@@ -1498,8 +1498,8 @@ def test_adding_opportunity_already_applied_skips_without_duplicating(monkeypatc
 
     monkeypatch.setattr(
         job_extract,
-        "extract_fields",
-        lambda description, model=job_extract.DEFAULT_MODEL: {
+        "extract_opportunity_fields",
+        lambda subject, snippet, model=job_extract.DEFAULT_MODEL: {
             "company": "Acme", "title": "Backend Engineer", "location": "", "salary": ""
         },
     )
@@ -1518,9 +1518,9 @@ def test_save_all_skips_already_tracked_companies_without_duplicating(monkeypatc
 
     monkeypatch.setattr(
         job_extract,
-        "extract_fields",
-        lambda description, model=job_extract.DEFAULT_MODEL: {
-            "company": "Acme" if "Acme" in description else "Globex",
+        "extract_opportunity_fields",
+        lambda subject, snippet, model=job_extract.DEFAULT_MODEL: {
+            "company": "Acme" if "Acme" in subject else "Globex",
             "title": "Engineer",
             "location": "",
             "salary": "",

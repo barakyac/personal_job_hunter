@@ -93,8 +93,8 @@ def test_is_connected_false_when_no_token():
 
 
 def test_is_connected_true_when_token_file_exists():
-    gmail_client.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    gmail_client.TOKEN_FILE.write_text("{}", encoding="utf-8")
+    gmail_client.data_dir().mkdir(parents=True, exist_ok=True)
+    gmail_client.token_file().write_text("{}", encoding="utf-8")
 
     assert gmail_client.is_connected()
 
@@ -144,7 +144,7 @@ def test_save_token_raises_when_no_refresh_token(monkeypatch):
     with pytest.raises(gmail_client.GmailAuthError, match="refresh token"):
         gmail_client.save_token({"access_token": "at1"})
 
-    assert not gmail_client.TOKEN_FILE.exists()
+    assert not gmail_client.token_file().exists()
 
 
 def test_save_token_raises_when_encryption_key_not_configured(monkeypatch):
@@ -154,7 +154,7 @@ def test_save_token_raises_when_encryption_key_not_configured(monkeypatch):
     with pytest.raises(gmail_client.GmailAuthError, match=gmail_client.TOKEN_ENCRYPTION_KEY_ENV_VAR):
         gmail_client.save_token({"access_token": "at1", "refresh_token": "rt1"})
 
-    assert not gmail_client.TOKEN_FILE.exists()
+    assert not gmail_client.token_file().exists()
 
 
 def test_save_token_writes_encrypted_credentials_file(monkeypatch):
@@ -164,8 +164,8 @@ def test_save_token_writes_encrypted_credentials_file(monkeypatch):
 
     gmail_client.save_token({"access_token": "at1", "refresh_token": "super-secret-rt"})
 
-    assert gmail_client.TOKEN_FILE.exists()
-    raw = gmail_client.TOKEN_FILE.read_bytes()
+    assert gmail_client.token_file().exists()
+    raw = gmail_client.token_file().read_bytes()
     # Not plaintext on disk.
     assert b"super-secret-rt" not in raw
     with pytest.raises(Exception):
@@ -202,7 +202,7 @@ class _FakeCreds:
 
 def test_load_credentials_refreshes_expired_token(monkeypatch):
     key = _set_encryption_key(monkeypatch)
-    _write_encrypted_token(gmail_client.TOKEN_FILE, key)
+    _write_encrypted_token(gmail_client.token_file(), key)
     fake_creds = _FakeCreds(expired=True, refresh_token="r1")
     monkeypatch.setattr(
         gmail_client.Credentials, "from_authorized_user_info", staticmethod(lambda *a, **k: fake_creds)
@@ -212,13 +212,13 @@ def test_load_credentials_refreshes_expired_token(monkeypatch):
 
     assert result is fake_creds
     assert fake_creds.refreshed
-    decrypted = Fernet(key).decrypt(gmail_client.TOKEN_FILE.read_bytes())
+    decrypted = Fernet(key).decrypt(gmail_client.token_file().read_bytes())
     assert decrypted == json.dumps({"ok": True}).encode("utf-8")
 
 
 def test_load_credentials_raises_and_clears_token_when_refresh_fails(monkeypatch):
     key = _set_encryption_key(monkeypatch)
-    _write_encrypted_token(gmail_client.TOKEN_FILE, key)
+    _write_encrypted_token(gmail_client.token_file(), key)
     fake_creds = _FakeCreds(expired=True, refresh_token="r1", raise_on_refresh=True)
     monkeypatch.setattr(
         gmail_client.Credentials, "from_authorized_user_info", staticmethod(lambda *a, **k: fake_creds)
@@ -229,12 +229,12 @@ def test_load_credentials_raises_and_clears_token_when_refresh_fails(monkeypatch
 
     # A revoked/expired refresh token (invalid_grant) is cleared locally
     # rather than left around to fail the same way on every page load.
-    assert not gmail_client.TOKEN_FILE.exists()
+    assert not gmail_client.token_file().exists()
 
 
 def test_load_credentials_raises_and_clears_token_when_expired_without_refresh_token(monkeypatch):
     key = _set_encryption_key(monkeypatch)
-    _write_encrypted_token(gmail_client.TOKEN_FILE, key)
+    _write_encrypted_token(gmail_client.token_file(), key)
     fake_creds = _FakeCreds(expired=True, refresh_token=None)
     monkeypatch.setattr(
         gmail_client.Credentials, "from_authorized_user_info", staticmethod(lambda *a, **k: fake_creds)
@@ -243,12 +243,12 @@ def test_load_credentials_raises_and_clears_token_when_expired_without_refresh_t
     with pytest.raises(gmail_client.GmailAuthError, match="connection expired"):
         gmail_client._load_credentials()
 
-    assert not gmail_client.TOKEN_FILE.exists()
+    assert not gmail_client.token_file().exists()
 
 
 def test_load_credentials_returns_valid_token_unchanged(monkeypatch):
     key = _set_encryption_key(monkeypatch)
-    _write_encrypted_token(gmail_client.TOKEN_FILE, key)
+    _write_encrypted_token(gmail_client.token_file(), key)
     fake_creds = _FakeCreds(expired=False, refresh_token="r1")
     monkeypatch.setattr(
         gmail_client.Credentials, "from_authorized_user_info", staticmethod(lambda *a, **k: fake_creds)
@@ -262,24 +262,24 @@ def test_load_credentials_returns_valid_token_unchanged(monkeypatch):
 
 def test_load_credentials_raises_missing_key_config_without_deleting_token(monkeypatch):
     # TOKEN_ENCRYPTION_KEY_ENV_VAR intentionally left unset.
-    _write_encrypted_token(gmail_client.TOKEN_FILE, Fernet.generate_key())
+    _write_encrypted_token(gmail_client.token_file(), Fernet.generate_key())
 
     with pytest.raises(gmail_client.GmailAuthError, match=gmail_client.TOKEN_ENCRYPTION_KEY_ENV_VAR):
         gmail_client._load_credentials()
 
     # A missing operator config, not a bad/revoked token - don't discard it.
-    assert gmail_client.TOKEN_FILE.exists()
+    assert gmail_client.token_file().exists()
 
 
 def test_load_credentials_raises_and_clears_token_when_undecryptable(monkeypatch):
     _set_encryption_key(monkeypatch)
-    gmail_client.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    gmail_client.TOKEN_FILE.write_bytes(b"not-a-valid-fernet-token")
+    gmail_client.data_dir().mkdir(parents=True, exist_ok=True)
+    gmail_client.token_file().write_bytes(b"not-a-valid-fernet-token")
 
     with pytest.raises(gmail_client.GmailAuthError, match="connection expired"):
         gmail_client._load_credentials()
 
-    assert not gmail_client.TOKEN_FILE.exists()
+    assert not gmail_client.token_file().exists()
 
 
 def test_get_service_builds_client(monkeypatch):
@@ -340,12 +340,12 @@ def test_get_connected_email_wraps_errors():
 def test_disconnect_does_nothing_when_not_connected():
     gmail_client.disconnect()  # no token file - should not raise
 
-    assert not gmail_client.TOKEN_FILE.exists()
+    assert not gmail_client.token_file().exists()
 
 
 def test_disconnect_revokes_and_deletes_local_token(monkeypatch):
     key = _set_encryption_key(monkeypatch)
-    _write_encrypted_token(gmail_client.TOKEN_FILE, key)
+    _write_encrypted_token(gmail_client.token_file(), key)
     fake_creds = _FakeCreds(expired=False, refresh_token="r1", token="access-token")
     monkeypatch.setattr(
         gmail_client.Credentials, "from_authorized_user_info", staticmethod(lambda *a, **k: fake_creds)
@@ -361,13 +361,13 @@ def test_disconnect_revokes_and_deletes_local_token(monkeypatch):
 
     gmail_client.disconnect()
 
-    assert not gmail_client.TOKEN_FILE.exists()
+    assert not gmail_client.token_file().exists()
     assert revoked == {"url": gmail_client.REVOKE_URL, "token": "r1"}
 
 
 def test_disconnect_still_deletes_token_when_revoke_fails(monkeypatch):
     key = _set_encryption_key(monkeypatch)
-    _write_encrypted_token(gmail_client.TOKEN_FILE, key)
+    _write_encrypted_token(gmail_client.token_file(), key)
     fake_creds = _FakeCreds(expired=False, refresh_token="r1")
     monkeypatch.setattr(
         gmail_client.Credentials, "from_authorized_user_info", staticmethod(lambda *a, **k: fake_creds)
@@ -380,14 +380,14 @@ def test_disconnect_still_deletes_token_when_revoke_fails(monkeypatch):
 
     gmail_client.disconnect()
 
-    assert not gmail_client.TOKEN_FILE.exists()
+    assert not gmail_client.token_file().exists()
 
 
 def test_disconnect_deletes_token_even_when_undecryptable(monkeypatch):
     """No encryption key configured (or a corrupted file) must never block
     clearing the local token - revocation is best-effort."""
-    gmail_client.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    gmail_client.TOKEN_FILE.write_bytes(b"opaque-bytes")
+    gmail_client.data_dir().mkdir(parents=True, exist_ok=True)
+    gmail_client.token_file().write_bytes(b"opaque-bytes")
 
     def fake_post(*a, **k):
         raise AssertionError("should not attempt to revoke an undecryptable token")
@@ -396,7 +396,7 @@ def test_disconnect_deletes_token_even_when_undecryptable(monkeypatch):
 
     gmail_client.disconnect()
 
-    assert not gmail_client.TOKEN_FILE.exists()
+    assert not gmail_client.token_file().exists()
 
 
 class _FakeExecutable:
@@ -668,14 +668,14 @@ def test_save_oauth_config_rejects_bad_client_id():
     with pytest.raises(gmail_client.GmailConfigError, match="apps.googleusercontent.com"):
         gmail_client.save_oauth_config("not-a-real-client-id", "some-secret")
 
-    assert not gmail_client.CONFIG_FILE.exists()
+    assert not gmail_client.config_file().exists()
 
 
 def test_save_oauth_config_rejects_empty_secret():
     with pytest.raises(gmail_client.GmailConfigError, match="Secret"):
         gmail_client.save_oauth_config("123.apps.googleusercontent.com", "   ")
 
-    assert not gmail_client.CONFIG_FILE.exists()
+    assert not gmail_client.config_file().exists()
 
 
 def test_save_oauth_config_persists_and_generates_encryption_key():
@@ -684,7 +684,7 @@ def test_save_oauth_config_persists_and_generates_encryption_key():
     )
 
     assert gmail_client.has_persisted_config()
-    saved = json.loads(gmail_client.CONFIG_FILE.read_text(encoding="utf-8"))
+    saved = json.loads(gmail_client.config_file().read_text(encoding="utf-8"))
     assert saved[gmail_client.CLIENT_ID_ENV_VAR] == "123.apps.googleusercontent.com"
     assert saved[gmail_client.CLIENT_SECRET_ENV_VAR] == "shh-secret"
     generated_key = saved[gmail_client.TOKEN_ENCRYPTION_KEY_ENV_VAR]
@@ -703,7 +703,7 @@ def test_save_oauth_config_does_not_overwrite_existing_encryption_key(monkeypatc
     gmail_client.save_oauth_config("123.apps.googleusercontent.com", "shh-secret")
 
     assert gmail_client.token_encryption_key() == key.decode()
-    saved = json.loads(gmail_client.CONFIG_FILE.read_text(encoding="utf-8"))
+    saved = json.loads(gmail_client.config_file().read_text(encoding="utf-8"))
     assert gmail_client.TOKEN_ENCRYPTION_KEY_ENV_VAR not in saved
 
 
@@ -723,13 +723,13 @@ def test_has_persisted_config_false_when_never_saved():
 
 def test_clear_oauth_config_deletes_config_and_token(monkeypatch):
     gmail_client.save_oauth_config("123.apps.googleusercontent.com", "shh-secret")
-    gmail_client.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    gmail_client.TOKEN_FILE.write_bytes(b"irrelevant")
+    gmail_client.data_dir().mkdir(parents=True, exist_ok=True)
+    gmail_client.token_file().write_bytes(b"irrelevant")
 
     gmail_client.clear_oauth_config()
 
     assert not gmail_client.has_persisted_config()
-    assert not gmail_client.TOKEN_FILE.exists()
+    assert not gmail_client.token_file().exists()
     assert not gmail_client.is_app_configured()
 
 

@@ -7,10 +7,12 @@ from dotenv import set_key
 
 from src import anthropic_client, ollama_client, openai_client, storage
 
-# Same reload-safe override pattern as storage.py's JOB_HUNTER_DATA_DIR -
-# tests point this at a throwaway file so a key saved via the UI form never
-# lands in the real project .env.
-ENV_PATH = Path(os.environ.get("JOB_HUNTER_ENV_FILE") or Path(__file__).resolve().parent.parent / ".env")
+def env_path() -> Path:
+    """Resolved fresh on every call, like src/storage.py's data_dir() - see
+    that function's docstring for why a module-level constant is a trap.
+    Tests point this at a throwaway file so a key saved via the UI form
+    never lands in the real project .env."""
+    return Path(os.environ.get("JOB_HUNTER_ENV_FILE") or Path(__file__).resolve().parent.parent / ".env")
 
 SYSTEM_PROMPT_TEMPLATE = """You are a helpful assistant built into this user's personal job-hunting \
 dashboard. You can help with job search strategy, resume feedback, interview prep, and questions \
@@ -54,7 +56,7 @@ PROVIDERS = {
 def _save_api_key(env_var: str, value: str) -> None:
     """Write env_var to the local .env (gitignored) and apply it to this
     running process immediately, so the provider works without a restart."""
-    set_key(str(ENV_PATH), env_var, value)
+    set_key(str(env_path()), env_var, value)
     os.environ[env_var] = value
 
 

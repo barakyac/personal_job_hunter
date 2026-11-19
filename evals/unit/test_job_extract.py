@@ -74,3 +74,97 @@ def test_extract_fields_propagates_ollama_error(monkeypatch):
 
     with pytest.raises(ollama_client.OllamaError):
         job_extract.extract_fields("posting text")
+
+
+# Regression fixtures: real job-alert emails that previously produced wrong
+# Saved Positions. Both are Glassdoor's digest-alert shape - the subject
+# names the one job this email is "about", but Gmail's snippet field is the
+# hidden preheader text, which names a *different* job card's company from
+# the same digest. Before extract_opportunity_fields's deterministic subject
+# parse, feeding subject+snippet through the generic LLM path picked the
+# snippet's unrelated company both times: "QA Automation Engineer at Questar
+# Auto Technologies..." produced company="<Hebrew company name from the
+# snippet>", and "Software Engineer at Check Point Software Technologies..."
+# produced company="Apple" (also from the snippet) with an empty title.
+QUESTAR_SUBJECT = (
+    "QA Automation Engineer at Questar Auto Technologies and 10 more jobs "
+    "in Tel Aviv-Yafo for you. Apply Now."
+)
+QUESTAR_SNIPPET = 'עידור מחשבים בע"מ is hiring'
+
+CHECK_POINT_SUBJECT = (
+    "Software Engineer at Check Point Software Technologies and 10 more jobs "
+    "in Tel Aviv-Yafo for you. Apply Now."
+)
+CHECK_POINT_SNIPPET = "Apple is hiring"
+
+
+def test_extract_opportunity_fields_parses_glassdoor_digest_subject_deterministically(monkeypatch):
+    """No Ollama call at all for this shape - see the module comment on
+    _GLASSDOOR_DIGEST_RE. monkeypatching chat_json to raise proves it: if
+    the code fell back to the LLM path here, this test would fail with an
+    OllamaError instead of an assertion mismatch."""
+
+    def raising_chat_json(system, user, model=job_extract.DEFAULT_MODEL):
+        raise ollama_client.OllamaError("should not be called for this subject shape")
+
+    monkeypatch.setattr(ollama_client, "chat_json", raising_chat_json)
+
+    fields = job_extract.extract_opportunity_fields(QUESTAR_SUBJECT, QUESTAR_SNIPPET)
+
+    assert fields == {
+        "company": "Questar Auto Technologies",
+        "title": "QA Automation Engineer",
+        "location": "Tel Aviv-Yafo",
+        "salary": "",
+    }
+
+
+def test_extract_opportunity_fields_ignores_misleading_glassdoor_snippet(monkeypatch):
+    """The snippet names "Apple" - a different job card in the same digest.
+    The real bug: that snippet text won the extraction over the subject's
+    actual company. Raising from chat_json (never reached for this subject
+    shape) also guards against a regression back to the LLM path."""
+
+    def raising_chat_json(system, user, model=job_extract.DEFAULT_MODEL):
+        raise ollama_client.OllamaError("should not be called for this subject shape")
+
+    monkeypatch.setattr(ollama_client, "chat_json", raising_chat_json)
+
+    fields = job_extract.extract_opportunity_fields(CHECK_POINT_SUBJECT, CHECK_POINT_SNIPPET)
+
+    assert fields["company"] == "Check Point Software Technologies"
+    assert fields["company"] != "Apple"
+    assert fields["title"] == "Software Engineer"
+    assert fields["location"] == "Tel Aviv-Yafo"
+
+
+def test_extract_opportunity_fields_falls_back_to_llm_for_non_digest_subject(monkeypatch):
+    """A LinkedIn-style "<company> is hiring: <title>" subject (or anything
+    else that doesn't match the Glassdoor digest shape) still goes through
+    the LLM, with both the subject and snippet passed into the prompt."""
+    seen = {}
+
+    def fake_chat_json(system, user, model=job_extract.DEFAULT_MODEL):
+        seen["system"] = system
+        seen["user"] = user
+        return {"company": "Mars Security", "title": "Senior Software Engineer", "location": "", "salary": ""}
+
+    monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
+
+    fields = job_extract.extract_opportunity_fields(
+        "Mars Security is hiring: Senior Software Engineer",
+        "Mars Security Senior Software Engineer: About Mars Security...",
+    )
+
+    assert fields == {
+        "company": "Mars Security",
+        "title": "Senior Software Engineer",
+        "location": "",
+        "salary": "",
+    }
+    assert "Mars Security is hiring: Senior Software Engineer" in seen["user"]
+    assert "About Mars Security" in seen["user"]
+    # The prompt should steer the model toward the subject over the snippet
+    # when they conflict - see OPPORTUNITY_SYSTEM_PROMPT.
+    assert "snippet" in seen["system"].lower()

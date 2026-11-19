@@ -1,20 +1,52 @@
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pandas as pd
 
-# Streamlit's AppTest reloads local modules (including this one) between
-# runs as part of simulating reruns. A test's monkeypatch.setattr on an
-# already-imported DATA_DIR has no effect on a module object created by such
-# a reload, so tests isolate via this env var instead - it's read fresh on
-# every import/reload and keeps pointing at the test's tmp dir either way.
-DATA_DIR = Path(os.environ.get("JOB_HUNTER_DATA_DIR") or Path(__file__).resolve().parent.parent / "data")
-SAVED_FILE = DATA_DIR / "saved_positions.json"
-APPLIED_FILE = DATA_DIR / "applied_positions.json"
-RESUME_FILE = DATA_DIR / "resume.md"
-PERSONAL_DIR = DATA_DIR / "personal"
-PERSONAL_CONTEXT_FILE = DATA_DIR / "personal_context.md"
+
+def data_dir() -> Path:
+    """Resolved fresh on every call, never cached at import time.
+
+    A module-level constant computed once from JOB_HUNTER_DATA_DIR is a trap:
+    anything that does `from src import storage` before setting that env var
+    - a pytest fixture that forgets the ordering, a one-off debug script, a
+    REPL session - silently locks onto the real project data/ dir for the
+    rest of that process, with no error. Resolving it fresh on every call
+    means only the ordering at the actual read/write site matters, not at
+    import time. (This bit us for real: a verification script imported
+    storage before setting the override and clobbered data/saved_positions.json.)
+    """
+    return Path(os.environ.get("JOB_HUNTER_DATA_DIR") or Path(__file__).resolve().parent.parent / "data")
+
+
+def backup_dir() -> Path:
+    """Sibling of data_dir() holding a rolling pre-overwrite copy of each
+    record file - see _save(). Tracks data_dir()'s own override so tests
+    (which point JOB_HUNTER_DATA_DIR at a tmp dir) back up into that tmp
+    dir too, never into the real project's data-backup/."""
+    return data_dir().parent / "data-backup"
+
+
+def _saved_file() -> Path:
+    return data_dir() / "saved_positions.json"
+
+
+def _applied_file() -> Path:
+    return data_dir() / "applied_positions.json"
+
+
+def _resume_file() -> Path:
+    return data_dir() / "resume.md"
+
+
+def personal_dir() -> Path:
+    return data_dir() / "personal"
+
+
+def _personal_context_file() -> Path:
+    return data_dir() / "personal_context.md"
 
 PIPELINE_STATUSES = [
     "Applied",
@@ -66,84 +98,91 @@ def _load(path: Path) -> list[dict]:
 
 
 def _save(path: Path, records: list[dict]) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    data_dir().mkdir(parents=True, exist_ok=True)
+    # Keep a rolling copy of what's about to be overwritten - cheap
+    # insurance against a bad write (ours or a future bug's) losing data
+    # with nowhere to recover it from.
+    if path.exists():
+        dest = backup_dir()
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, dest / path.name)
     with path.open("w", encoding="utf-8") as f:
         json.dump(records, f, indent=2, default=str)
 
 
 def load_saved() -> list[dict]:
-    return _load(SAVED_FILE)
+    return _load(_saved_file())
 
 
 def save_saved(records: list[dict]) -> None:
-    _save(SAVED_FILE, records)
+    _save(_saved_file(), records)
 
 
 def load_applied() -> list[dict]:
-    return _load(APPLIED_FILE)
+    return _load(_applied_file())
 
 
 def save_applied(records: list[dict]) -> None:
-    _save(APPLIED_FILE, records)
+    _save(_applied_file(), records)
 
 
 def load_resume() -> str:
-    if not RESUME_FILE.exists():
+    if not _resume_file().exists():
         return ""
-    return RESUME_FILE.read_text(encoding="utf-8")
+    return _resume_file().read_text(encoding="utf-8")
 
 
 def save_resume(text: str) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    RESUME_FILE.write_text(text, encoding="utf-8")
+    data_dir().mkdir(parents=True, exist_ok=True)
+    _resume_file().write_text(text, encoding="utf-8")
 
 
 def save_resume_original(file_bytes: bytes, filename: str) -> Path:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    for existing in DATA_DIR.glob("resume_original.*"):
+    data_dir().mkdir(parents=True, exist_ok=True)
+    for existing in data_dir().glob("resume_original.*"):
         existing.unlink()
-    path = DATA_DIR / f"resume_original{Path(filename).suffix.lower()}"
+    path = data_dir() / f"resume_original{Path(filename).suffix.lower()}"
     path.write_bytes(file_bytes)
     return path
 
 
 def load_resume_original_path() -> Path | None:
-    matches = list(DATA_DIR.glob("resume_original.*"))
+    matches = list(data_dir().glob("resume_original.*"))
     return matches[0] if matches else None
 
 
 def save_personal_file(file_bytes: bytes, filename: str) -> Path:
     """Store an original supporting document (cover letter, certs, notes, ...)."""
-    PERSONAL_DIR.mkdir(parents=True, exist_ok=True)
+    personal_dir().mkdir(parents=True, exist_ok=True)
     safe_name = Path(filename).name
     if not safe_name:
         raise ValueError("filename must not be empty")
-    path = PERSONAL_DIR / safe_name
+    path = personal_dir() / safe_name
     path.write_bytes(file_bytes)
     return path
 
 
 def list_personal_files() -> list[Path]:
-    if not PERSONAL_DIR.exists():
+    if not personal_dir().exists():
         return []
-    return sorted(p for p in PERSONAL_DIR.iterdir() if p.is_file())
+    return sorted(p for p in personal_dir().iterdir() if p.is_file())
 
 
 def delete_personal_file(filename: str) -> None:
-    path = PERSONAL_DIR / Path(filename).name
+    path = personal_dir() / Path(filename).name
     if path.exists():
         path.unlink()
 
 
 def save_personal_context(text: str) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    PERSONAL_CONTEXT_FILE.write_text(text, encoding="utf-8")
+    data_dir().mkdir(parents=True, exist_ok=True)
+    _personal_context_file().write_text(text, encoding="utf-8")
 
 
 def load_personal_context() -> str:
-    if not PERSONAL_CONTEXT_FILE.exists():
+    if not _personal_context_file().exists():
         return ""
-    return PERSONAL_CONTEXT_FILE.read_text(encoding="utf-8")
+    return _personal_context_file().read_text(encoding="utf-8")
 
 
 def find_record_index(records: list[dict], company: str, title: str = "", link: str = "") -> int | None:

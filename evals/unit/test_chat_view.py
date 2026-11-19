@@ -161,8 +161,8 @@ def test_submitting_api_key_form_saves_to_env_file_and_current_process(monkeypat
 
     assert not at.exception
     assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-test-123"
-    assert chat_view.ENV_PATH.exists()
-    assert "sk-ant-test-123" in chat_view.ENV_PATH.read_text()
+    assert chat_view.env_path().exists()
+    assert "sk-ant-test-123" in chat_view.env_path().read_text()
     # the form disappears once the key is set
     with pytest.raises(KeyError):
         at.text_input(key="api_key_input_ANTHROPIC_API_KEY")

@@ -6,10 +6,11 @@ import pytest
 from src import chat_view, gmail_client, storage
 
 # Captured now, before any test's fixture can set JOB_HUNTER_DATA_DIR /
-# JOB_HUNTER_ENV_FILE or monkeypatch storage.DATA_DIR - always the real
-# project data/ directory and .env file.
-_REAL_DATA_DIR = storage.DATA_DIR
-_REAL_ENV_PATH = chat_view.ENV_PATH
+# JOB_HUNTER_ENV_FILE - always the real project data/ directory and .env
+# file, since storage.data_dir()/chat_view.env_path() are resolved fresh
+# from the env var on every call rather than cached at import time.
+_REAL_DATA_DIR = storage.data_dir()
+_REAL_ENV_PATH = chat_view.env_path()
 
 
 def _snapshot(data_dir: Path) -> dict[str, str]:
@@ -53,24 +54,15 @@ def isolated_data_dir(tmp_path, monkeypatch):
     """Redirect storage paths into a throwaway dir so unit tests never touch
     the real data/ (your actual resume, applications, saved jobs, ...).
 
-    Sets JOB_HUNTER_DATA_DIR first: Streamlit's AppTest reloads local
-    modules (e.g. src/saved_view.py, which only gets imported on its first
-    use inside a test) between runs, and a fresh reload re-reads this env
-    var rather than inheriting the attribute patches below - those only
-    cover code holding a reference to the module object that already
-    existed when this fixture ran, not a reload that happens afterward.
+    storage.data_dir()/gmail_client.data_dir()/chat_view.env_path() all
+    resolve JOB_HUNTER_DATA_DIR / JOB_HUNTER_ENV_FILE fresh on every call
+    (see storage.data_dir()'s docstring) rather than caching a path at
+    import time, so setting the env vars here is sufficient on its own -
+    no module-attribute patching needed, and it holds up across whatever
+    reload Streamlit's AppTest triggers between runs.
     """
     data_dir = tmp_path / "data"
     monkeypatch.setenv("JOB_HUNTER_DATA_DIR", str(data_dir))
-    monkeypatch.setattr(storage, "DATA_DIR", data_dir)
-    monkeypatch.setattr(storage, "SAVED_FILE", data_dir / "saved_positions.json")
-    monkeypatch.setattr(storage, "APPLIED_FILE", data_dir / "applied_positions.json")
-    monkeypatch.setattr(storage, "RESUME_FILE", data_dir / "resume.md")
-    monkeypatch.setattr(storage, "PERSONAL_DIR", data_dir / "personal")
-    monkeypatch.setattr(storage, "PERSONAL_CONTEXT_FILE", data_dir / "personal_context.md")
-    monkeypatch.setattr(gmail_client, "DATA_DIR", data_dir)
-    monkeypatch.setattr(gmail_client, "TOKEN_FILE", data_dir / "gmail_token.json")
-    monkeypatch.setattr(gmail_client, "CONFIG_FILE", data_dir / "gmail_oauth_config.json")
     # Isolate from whatever the developer machine running this test suite
     # has configured for the real app - tests set these explicitly per test.
     monkeypatch.delenv(gmail_client.CLIENT_ID_ENV_VAR, raising=False)
@@ -85,4 +77,3 @@ def isolated_data_dir(tmp_path, monkeypatch):
 
     env_file = tmp_path / "test.env"
     monkeypatch.setenv("JOB_HUNTER_ENV_FILE", str(env_file))
-    monkeypatch.setattr(chat_view, "ENV_PATH", env_file)

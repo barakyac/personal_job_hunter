@@ -78,7 +78,7 @@ def _render_setup_form() -> None:
     st.caption(
         "One-time setup for whoever runs this app - create this app's own Google OAuth "
         "client, then paste its ID and secret below. They're saved locally "
-        f"({gmail_client.CONFIG_FILE.name}, gitignored) and never shown again."
+        f"({gmail_client.config_file().name}, gitignored) and never shown again."
     )
     with st.expander("Google Cloud Console steps", expanded=True):
         st.markdown(
@@ -465,21 +465,27 @@ def _company_already_tracked(company: str) -> bool:
 
 
 def _add_opportunity_as_saved(msg: dict) -> tuple[str, bool]:
-    """Pull company/title/location/salary out of a job-alert email's
-    subject+snippet with Ollama and add it as a new Saved Position. The
-    job-posting link isn't in that metadata+snippet (search_messages never
-    reads the body), so it's fetched separately via
-    gmail_client.get_message_link() - a one-off full-body read of just this
-    message, done only because the user chose to add it. If that lookup
-    fails or finds nothing, the record is still added with an empty link
-    for the user to fill in. Raises ollama_client.OllamaError on failure to
-    extract fields; writes nothing to storage or session state in that
-    case. Does not rerun - callers (single or bulk) decide when to do that.
+    """Pull company/title/location/salary out of a job-alert email and add
+    it as a new Saved Position, via job_extract.extract_opportunity_fields()
+    (not extract_fields() - a job-alert's subject+snippet isn't a pasted job
+    posting, and feeding it through that generic path was the source of a
+    real bug: Gmail's snippet for a Glassdoor digest alert is the hidden
+    preheader text, which names a *different* job card's company than the
+    one the subject/this email is actually about - see
+    extract_opportunity_fields's docstring). The job-posting link isn't in
+    that metadata+snippet (search_messages never reads the body), so it's
+    fetched separately via gmail_client.get_message_link() - a one-off
+    full-body read of just this message, done only because the user chose
+    to add it. If that lookup fails or finds nothing, the record is still
+    added with an empty link for the user to fill in. Raises
+    ollama_client.OllamaError on failure to extract fields; writes nothing
+    to storage or session state in that case. Does not rerun - callers
+    (single or bulk) decide when to do that.
 
     Returns (company, was_added) - was_added is False, and nothing is
     written, when the company is already tracked in Saved or Applied
     Positions."""
-    fields = job_extract.extract_fields(f"{msg['subject']}\n{msg['snippet']}")
+    fields = job_extract.extract_opportunity_fields(msg["subject"], msg["snippet"])
     company = fields["company"]
 
     if _company_already_tracked(company):

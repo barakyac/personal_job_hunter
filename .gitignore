@@ -8,5 +8,6 @@ __pycache__/
 # Personal data - resume, applications, supporting docs. Never commit this.
 data/*
 !data/.gitkeep
+data-backup/
 .pytest_cache/
 .boost/

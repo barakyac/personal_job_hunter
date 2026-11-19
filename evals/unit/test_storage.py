@@ -61,7 +61,7 @@ def test_personal_file_add_list_delete():
 
 def test_save_personal_file_strips_path_traversal():
     path = storage.save_personal_file(b"hello", "../../etc/evil.txt")
-    assert path.parent == storage.PERSONAL_DIR
+    assert path.parent == storage.personal_dir()
     assert path.name == "evil.txt"
     storage.delete_personal_file("../../etc/evil.txt")
     assert storage.list_personal_files() == []
