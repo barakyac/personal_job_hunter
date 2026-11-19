@@ -279,7 +279,7 @@ EXPIRED_CONNECTION_MESSAGE = 'Your Gmail connection expired, click "Connect with
 def _load_credentials() -> Credentials:
     if not token_file().exists():
         raise GmailAuthError(
-            "Gmail isn't connected yet. Click \"Connect with Google\" on the Mail Tracking page."
+            "Gmail isn't connected yet. Click \"Connect with Google\" on the Mail Inbox page."
         )
     fernet = _fernet()
     try:

@@ -1,3 +1,5 @@
+from datetime import date
+
 from streamlit.testing.v1 import AppTest
 
 from src import fit_analysis, job_extract, storage
@@ -148,50 +150,61 @@ def test_paste_popover_surfaces_ollama_error(monkeypatch):
     assert any("Could not reach Ollama" in e.value for e in at.error)
 
 
-def test_move_to_applied_positions_transfers_record():
+def test_mark_applied_button_opens_dialog_without_moving():
     storage.save_saved([{"company": "Acme", "title": "Backend", "link": "", "date_saved": "2026-01-01"}])
 
     at = AppTest.from_function(_render_saved).run()
-    assert not at.exception
-
-    move_button = next(b for b in at.button if b.label == "Move to Applied Positions")
-    move_button.click().run()
+    at.button(key="mark_applied_row_Acme_Backend_0").click().run()
 
     assert not at.exception
+    # Still in Saved Positions - a single click only opens the dialog, it
+    # doesn't move the record yet (see saved_view._mark_applied_dialog).
+    assert storage.load_applied() == []
+    assert at.button(key="confirm_mark_applied_Acme_Backend_0") is not None
+
+
+def test_move_to_applied_transfers_record():
+    from src import saved_view
+
+    storage.save_saved([{"company": "Acme", "title": "Backend", "link": "", "date_saved": "2026-01-01"}])
+    records = storage.load_saved()
+
+    saved_view._move_to_applied(records, 0, date(2026, 1, 2), "Applied")
+
     assert storage.load_saved() == []
     applied = storage.load_applied()
     assert len(applied) == 1
     assert applied[0]["company"] == "Acme"
     assert applied[0]["status"] == "Applied"
-    assert "date_applied" in applied[0]
+    assert applied[0]["date_applied"] == "2026-01-02"
 
 
-def test_move_to_applied_positions_drops_posting_status():
+def test_move_to_applied_drops_posting_status():
     # "Open/Closed for applications" describes the job posting, not this
     # user's own pipeline stage (APPLIED_COLUMNS' separate "status") - it
     # has no meaning once the position has moved to Applied.
+    from src import saved_view
+
     storage.save_saved([{
         "company": "Acme", "title": "Backend", "link": "",
         "posting_status": storage.POSTING_STATUS_OPEN, "date_saved": "2026-01-01",
     }])
+    records = storage.load_saved()
 
-    at = AppTest.from_function(_render_saved).run()
-    move_button = next(b for b in at.button if b.label == "Move to Applied Positions")
-    move_button.click().run()
+    saved_view._move_to_applied(records, 0, date(2026, 1, 2), "Applied")
 
-    assert not at.exception
     applied = storage.load_applied()
     assert "posting_status" not in applied[0]
 
 
-def test_close_posting_button_marks_position_closed():
+def test_mark_closed_button_marks_position_closed():
     storage.save_saved([{
         "company": "Acme", "title": "Backend", "link": "",
         "posting_status": storage.POSTING_STATUS_OPEN, "date_saved": "2026-01-01",
     }])
 
     at = AppTest.from_function(_render_saved).run()
-    close_button = next(b for b in at.button if b.key == "close_posting_0")
+    close_button = next(b for b in at.button if b.key == "toggle_closed_row_Acme_Backend_0")
     close_button.click().run()
 
     assert not at.exception
@@ -200,7 +213,7 @@ def test_close_posting_button_marks_position_closed():
     assert saved[0]["posting_status"] == storage.POSTING_STATUS_CLOSED
 
 
-def test_close_posting_button_hidden_once_closed():
+def test_closed_posting_hidden_by_default_toggle():
     storage.save_saved([{
         "company": "Acme", "title": "Backend", "link": "",
         "posting_status": storage.POSTING_STATUS_CLOSED, "date_saved": "2026-01-01",
@@ -209,11 +222,13 @@ def test_close_posting_button_hidden_once_closed():
     at = AppTest.from_function(_render_saved).run()
 
     assert not at.exception
-    assert not any(b.key == "close_posting_0" for b in at.button)
-    assert any("No open postings" in c.value for c in at.caption)
+    # Hide-closed defaults to on, so the only (closed) row isn't rendered
+    # at all - no row-action buttons for it should exist.
+    assert not any(b.key and b.key.startswith("mark_applied_row_") for b in at.button)
+    assert any("No saved positions match the current filters." in c.value for c in at.caption)
 
 
-def test_close_posting_only_shows_buttons_for_open_positions():
+def test_overflow_menu_offers_reopen_for_a_closed_position_when_shown():
     storage.save_saved([
         {"company": "Acme", "title": "Backend", "link": "", "posting_status": storage.POSTING_STATUS_OPEN,
          "date_saved": "2026-01-01"},
@@ -222,10 +237,15 @@ def test_close_posting_only_shows_buttons_for_open_positions():
     ])
 
     at = AppTest.from_function(_render_saved).run()
+    at = at.toggle(key="hide_closed_postings").set_value(False).run()
 
     assert not at.exception
-    assert any(b.key == "close_posting_0" for b in at.button)
-    assert not any(b.key == "close_posting_1" for b in at.button)
+    acme_row = "Acme_Backend_0"
+    globex_row = "Globex_Frontend_1"
+    assert any(b.key == f"toggle_closed_row_{acme_row}" and b.label == "Mark closed" for b in at.button)
+    assert any(b.key == f"toggle_closed_row_{globex_row}" and b.label == "Reopen" for b in at.button)
+    # Closed postings can't be marked applied or re-analyzed from the row.
+    assert next(b for b in at.button if b.key == f"mark_applied_row_{globex_row}").disabled
 
 
 def test_closed_postings_sort_to_the_end_by_default():
@@ -396,6 +416,8 @@ def test_calculate_fit_surfaces_ollama_error_without_blocking_the_rest(monkeypat
 
 
 def test_calculate_fit_shows_info_when_no_saved_positions():
+    storage.save_resume("My resume")
+
     at = AppTest.from_function(_render_saved).run()
     at.button(key="calc_fit_saved_btn").click().run()
 
@@ -515,6 +537,61 @@ def test_calculate_fit_persists_each_position_before_scoring_the_next(monkeypatc
     # Acme's score was already written to storage by the time Globex was
     # analyzed - each position is saved separately, not all at the end.
     assert seen_acme_score_before_globex == [7]
+
+
+def test_analyze_fit_row_button_scores_a_single_position(monkeypatch):
+    from src import fit_analysis
+
+    storage.save_resume("My resume")
+    storage.save_saved([{"company": "Acme", "title": "Backend", "link": "", "date_saved": "2026-01-01"}])
+
+    monkeypatch.setattr(
+        fit_analysis, "analyze", lambda resume_text, job, model=None: {"fit_score": 9, "fit_notes": "Great fit."}
+    )
+
+    at = AppTest.from_function(_render_saved).run()
+    at.button(key="analyze_fit_row_Acme_Backend_0").click().run()
+
+    assert not at.exception
+    saved = storage.load_saved()
+    assert saved[0]["fit_score"] == 9
+    assert saved[0]["fit_notes"] == "Great fit."
+
+
+def test_overflow_edit_dialog_saves_changes_to_the_record():
+    storage.save_saved([{"company": "Acme", "title": "Backend", "link": "", "date_saved": "2026-01-01"}])
+
+    at = AppTest.from_function(_render_saved).run()
+    at.button(key="edit_row_Acme_Backend_0").click().run()
+
+    assert not at.exception
+    assert at.text_input(key="edit_saved_company_Acme_Backend_0").value == "Acme"
+    assert at.button(key="save_edit_saved_Acme_Backend_0") is not None
+
+
+def test_overflow_remove_opens_confirmation_dialog_without_removing():
+    storage.save_saved([{"company": "Acme", "title": "Backend", "link": "", "date_saved": "2026-01-01"}])
+
+    at = AppTest.from_function(_render_saved).run()
+    at.button(key="remove_row_Acme_Backend_0").click().run()
+
+    assert not at.exception
+    assert storage.load_saved() != []
+    assert at.button(key="confirm_remove_saved_Acme_Backend_0") is not None
+
+
+def test_search_filters_the_primary_list():
+    storage.save_saved([
+        {"company": "Acme", "title": "Backend", "link": "", "date_saved": "2026-01-01"},
+        {"company": "Globex", "title": "Frontend", "link": "", "date_saved": "2026-01-01"},
+    ])
+
+    at = AppTest.from_function(_render_saved).run()
+    at = at.text_input(key="saved_search").set_value("acme").run()
+
+    assert not at.exception
+    assert any(b.key == "mark_applied_row_Acme_Backend_0" for b in at.button)
+    assert not any(b.key and b.key.startswith("mark_applied_row_Globex") for b in at.button)
 
 
 def test_calculate_fit_shows_info_when_everything_already_scored(monkeypatch):

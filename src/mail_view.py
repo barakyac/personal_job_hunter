@@ -109,12 +109,12 @@ def _render_setup_form() -> None:
 
     with st.form("gmail_oauth_setup_form", border=False):
         client_id_input = st.text_input(
-            "Google OAuth Client ID",
+            "Google OAuth Client ID :red[*]",
             placeholder="xxxxxxxxxxxx.apps.googleusercontent.com",
             key="gmail_setup_client_id_input",
         )
         client_secret_input = st.text_input(
-            "Google OAuth Client Secret", type="password", key="gmail_setup_client_secret_input"
+            "Google OAuth Client Secret :red[*]", type="password", key="gmail_setup_client_secret_input"
         )
         submitted = st.form_submit_button("Save", key="gmail_setup_submit_btn")
 
@@ -137,10 +137,7 @@ def _render_reset_setup_control() -> None:
             "disconnects any connected Gmail account, so you can redo the one-time setup."
         )
         if st.button("Reset Gmail setup", key="reset_gmail_setup_btn"):
-            gmail_client.clear_oauth_config()
-            for key in (SCAN_RESULTS_KEY, OPPORTUNITIES_KEY, CONNECTED_EMAIL_KEY, LAST_SYNC_KEY, ANALYSIS_KEY, OPPORTUNITY_ACTIONS_KEY, UNLISTED_KEY, UNLISTED_ACTIONS_KEY):
-                st.session_state.pop(key, None)
-            st.rerun()
+            _confirm_reset_dialog()
 
 
 def _render_connect_section() -> None:
@@ -164,6 +161,47 @@ def _render_connect_section() -> None:
         st.rerun()
 
 
+def _disconnect_gmail() -> None:
+    gmail_client.disconnect()
+
+
+@st.dialog("Disconnect Gmail?")
+def _confirm_disconnect_dialog() -> None:
+    st.write("This disconnects your Gmail account and clears this session's scan results. You can reconnect anytime.")
+    confirm_col, cancel_col = st.columns(2)
+    with confirm_col:
+        if st.button("Disconnect", key="confirm_disconnect_gmail_btn", type="primary"):
+            _disconnect_gmail()
+            for key in (SCAN_RESULTS_KEY, OPPORTUNITIES_KEY, CONNECTED_EMAIL_KEY, LAST_SYNC_KEY, ANALYSIS_KEY, OPPORTUNITY_ACTIONS_KEY, UNLISTED_KEY, UNLISTED_ACTIONS_KEY):
+                st.session_state.pop(key, None)
+            st.rerun()
+    with cancel_col:
+        if st.button("Cancel", key="cancel_disconnect_gmail_btn"):
+            st.rerun()
+
+
+def _reset_gmail_setup() -> None:
+    gmail_client.clear_oauth_config()
+
+
+@st.dialog("Reset Gmail setup?")
+def _confirm_reset_dialog() -> None:
+    st.write(
+        "This clears the locally-saved OAuth client ID/secret and encryption key, and "
+        "disconnects any connected Gmail account, so you can redo the one-time setup."
+    )
+    confirm_col, cancel_col = st.columns(2)
+    with confirm_col:
+        if st.button("Reset", key="confirm_reset_gmail_btn", type="primary"):
+            _reset_gmail_setup()
+            for key in (SCAN_RESULTS_KEY, OPPORTUNITIES_KEY, CONNECTED_EMAIL_KEY, LAST_SYNC_KEY, ANALYSIS_KEY, OPPORTUNITY_ACTIONS_KEY, UNLISTED_KEY, UNLISTED_ACTIONS_KEY):
+                st.session_state.pop(key, None)
+            st.rerun()
+    with cancel_col:
+        if st.button("Cancel", key="cancel_reset_gmail_btn"):
+            st.rerun()
+
+
 def _render_status_bar() -> None:
     if CONNECTED_EMAIL_KEY not in st.session_state:
         try:
@@ -182,10 +220,7 @@ def _render_status_bar() -> None:
             st.rerun()
     with disconnect_col:
         if st.button("Disconnect Gmail", key="disconnect_gmail_btn"):
-            gmail_client.disconnect()
-            for key in (SCAN_RESULTS_KEY, OPPORTUNITIES_KEY, CONNECTED_EMAIL_KEY, LAST_SYNC_KEY, ANALYSIS_KEY, OPPORTUNITY_ACTIONS_KEY, UNLISTED_KEY, UNLISTED_ACTIONS_KEY):
-                st.session_state.pop(key, None)
-            st.rerun()
+            _confirm_disconnect_dialog()
 
 
 def _scan_applications(companies: list[str]) -> None:
@@ -211,7 +246,7 @@ def _scan_applications(companies: list[str]) -> None:
         st.session_state[SCAN_RESULTS_KEY] = results
         st.session_state[LAST_SYNC_KEY] = _now_label()
         # A fresh scan may contain different emails than whatever an earlier
-        # "Analyze with AI" suggestion was based on - drop stale suggestions
+        # "Analyze" suggestion was based on - drop stale suggestions
         # rather than leave an approvable button whose reasoning no longer
         # matches what's on screen.
         st.session_state.pop(ANALYSIS_KEY, None)
@@ -348,7 +383,7 @@ def _render_manual_status_control(company: str) -> None:
     if index is None:
         st.caption(
             "Can't match this to a single application record - update its status on the "
-            "Edit Applications page instead."
+            "Applications page instead."
         )
         return
 
@@ -373,7 +408,7 @@ def _analyze_all_companies(companies: list[str], results: dict) -> None:
     """Run _analyze_company for each given company (already filtered to
     ones worth asking Ollama about), so the user can review every
     suggestion in one place instead of opening each company's expander and
-    clicking "Analyze with AI" one at a time."""
+    clicking "Analyze" one at a time."""
     analyzable = [(c, results[c]) for c in companies if isinstance(results.get(c), list) and results.get(c)]
     if not analyzable:
         return
@@ -645,7 +680,7 @@ def _render_opportunity(msg: dict) -> None:
     st.caption("Not yet tracked - add it as a new saved position, or dismiss it.")
     add_col, dismiss_col = st.columns(2)
     with add_col:
-        if st.button(f"Add to Saved Positions ({job_extract.DEFAULT_MODEL})", key=f"add_opportunity_{msg['id']}"):
+        if st.button(f"Add to Saved Positions (Ollama {job_extract.DEFAULT_MODEL})", key=f"add_opportunity_{msg['id']}"):
             try:
                 with st.spinner(f"Extracting fields with Ollama {job_extract.DEFAULT_MODEL}..."):
                     company, added = _add_opportunity_as_saved(msg)
@@ -720,7 +755,7 @@ def _render_unlisted_application(item: dict) -> None:
 
 
 def render() -> None:
-    st.header("Mail Tracking")
+    st.markdown('<div class="jh-page-title">Mail Inbox</div>', unsafe_allow_html=True)
     st.caption(
         "Read-only: scans Gmail for messages about your applied companies, for new "
         "job-alert emails, and for applications you haven't added here yet. This view "
@@ -760,7 +795,7 @@ def render() -> None:
             _scan_opportunities()
     with col3:
         if st.button(
-            f"Rescan untracked applications ({job_extract.DEFAULT_MODEL})", key="scan_unlisted_btn"
+            f"Rescan untracked applications (Ollama {job_extract.DEFAULT_MODEL})", key="scan_unlisted_btn"
         ):
             _scan_unlisted_applications(unlisted_known_companies)
 
@@ -781,9 +816,9 @@ def render() -> None:
         if msg["looks_like_rejection"]
     )
     if rejection_count:
-        st.warning(f"⚠️ {rejection_count} email(s) below look like a rejection - take a look.")
+        st.warning(f"{rejection_count} email(s) below look like a rejection - take a look.")
     if isinstance(opportunities, list) and opportunities:
-        st.info(f"📬 {len(opportunities)} new job-alert email(s) found below.")
+        st.info(f"{len(opportunities)} new job-alert email(s) found below.")
 
     unlisted = st.session_state.get(UNLISTED_KEY)
     if isinstance(unlisted, Exception):
@@ -793,7 +828,7 @@ def render() -> None:
             item for item in unlisted
             if st.session_state.get(UNLISTED_ACTIONS_KEY, {}).get(item["msg"]["id"]) not in ("added", "dismissed")
         ]
-        st.subheader(f"Not Yet Tracked ({len(pending_unlisted)})")
+        st.subheader(f"Untracked applications ({len(pending_unlisted)})")
         if not unlisted:
             st.caption("No untracked application emails found.")
         elif not pending_unlisted:
@@ -814,7 +849,7 @@ def render() -> None:
         # that can't happen. Only applies when the company resolves to a
         # single record - an ambiguous one (multiple records, see
         # _analyze_company) is left in, since its outcome isn't settled
-        # either way. The per-company "Analyze with AI" button is
+        # either way. The per-company "Analyze" button is
         # unaffected, for a manual recheck.
         company_statuses: dict[str, list[str]] = {}
         for r in applied:
@@ -830,14 +865,16 @@ def render() -> None:
             c for c in companies
             if isinstance(results.get(c), list) and results.get(c) and c not in final_companies
         ]
+        companies_with_mail = sum(1 for c in companies if isinstance(results.get(c), list) and results.get(c))
+        st.subheader(f"Application updates ({companies_with_mail})")
+
         if analyzable_companies and st.button(
-            f"Analyze all applications with AI ({mail_analysis.DEFAULT_MODEL})", key="analyze_all_mail_btn"
+            f"Analyze all applications (Ollama {mail_analysis.DEFAULT_MODEL})", key="analyze_all_mail_btn"
         ):
             _analyze_all_companies(analyzable_companies, results)
 
         _render_pending_suggestions()
 
-        st.subheader("Applied companies")
         for company in companies:
             company_result = results.get(company)
             with st.expander(company):
@@ -849,7 +886,7 @@ def render() -> None:
                     for msg in company_result:
                         _render_message(msg)
                     if st.button(
-                        f"Analyze with AI ({mail_analysis.DEFAULT_MODEL})",
+                        f"Analyze (Ollama {mail_analysis.DEFAULT_MODEL})",
                         key=f"analyze_mail_{company}",
                     ):
                         _analyze_company(company, company_result)
@@ -860,7 +897,7 @@ def render() -> None:
     if isinstance(opportunities, Exception):
         st.error(str(opportunities))
     elif isinstance(opportunities, list):
-        st.subheader("New job opportunities")
+        st.subheader(f"New opportunities ({len(opportunities)})")
         if not opportunities:
             st.caption("No new job-alert emails found.")
         else:
@@ -870,7 +907,7 @@ def render() -> None:
                 not in ("added", "dismissed", "skipped")
             ]
             if pending_opportunities and st.button(
-                f"Save all as Saved Positions ({job_extract.DEFAULT_MODEL})", key="add_all_opportunities_btn"
+                f"Save all as Saved Positions (Ollama {job_extract.DEFAULT_MODEL})", key="add_all_opportunities_btn"
             ):
                 _add_all_opportunities(pending_opportunities)
             for msg in opportunities:

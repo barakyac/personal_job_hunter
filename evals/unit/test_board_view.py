@@ -148,6 +148,40 @@ def test_card_displays_saved_call_notes():
     assert any("Great first call." in m.value for m in at.markdown)
 
 
+def test_hide_empty_stages_toggle_shown_only_when_a_stage_is_empty():
+    storage.save_applied([{"company": "Acme", "title": "Backend", "status": "Applied"}])
+
+    at = AppTest.from_function(_render_pipeline_board).run()
+
+    assert not at.exception
+    assert any(t.key == "hide_empty_stages_Applied Positions" for t in at.toggle)
+
+
+def test_hide_empty_stages_toggle_removes_empty_columns():
+    storage.save_applied([{"company": "Acme", "title": "Backend", "status": "Applied"}])
+
+    at = AppTest.from_function(_render_pipeline_board).run()
+    at = at.toggle(key="hide_empty_stages_Applied Positions").set_value(True).run()
+
+    assert not at.exception
+    # Only the "Applied" column (which has a record) should still show its
+    # card - the other four pipeline stages are empty and now hidden.
+    assert any(b.key == "details_btn_0" for b in at.button)
+
+
+def test_details_button_opens_dialog_with_editable_fields():
+    storage.save_applied(
+        [{"company": "Acme", "title": "Backend", "status": "Applied", "notes": "Referred by a friend."}]
+    )
+
+    at = AppTest.from_function(_render_pipeline_board).run()
+    at.button(key="details_btn_0").click().run()
+
+    assert not at.exception
+    assert at.text_area(key="details_notes_0").value == "Referred by a friend."
+    assert at.button(key="save_details_0") is not None
+
+
 def test_call_details_dialog_embeds_the_assistant_chat():
     storage.save_applied([{"company": "Acme", "title": "Backend", "status": "Applied"}])
 

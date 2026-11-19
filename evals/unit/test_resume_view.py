@@ -105,7 +105,7 @@ def test_adding_a_supporting_document_rebuilds_personal_context():
     assert "Dear hiring manager" in storage.load_personal_context()
 
 
-def test_removing_a_supporting_document_updates_the_list_and_context():
+def test_remove_button_opens_confirmation_dialog_without_removing():
     storage.save_personal_file(b"Dear hiring manager, ...", "cover_letter.txt")
 
     at = AppTest.from_function(_render_resume).run()
@@ -115,13 +115,27 @@ def test_removing_a_supporting_document_updates_the_list_and_context():
     remove_button.click().run()
 
     assert not at.exception
+    # Still there - a single click only opens the confirmation dialog, it
+    # doesn't remove the file yet (see resume_view._confirm_remove_dialog).
+    assert storage.list_personal_files() != []
+    assert at.button(key="confirm_remove_personal_cover_letter.txt") is not None
+
+
+def test_remove_personal_file_deletes_it_and_rebuilds_context():
+    from src import resume_view
+
+    storage.save_personal_file(b"Dear hiring manager, ...", "cover_letter.txt")
+
+    resume_view._remove_personal_file("cover_letter.txt")
+
     assert storage.list_personal_files() == []
+    assert "Dear hiring manager" not in storage.load_personal_context()
 
 
 def test_analyze_saved_jobs_requires_a_resume_first():
     at = AppTest.from_function(_render_resume).run()
 
-    analyze_button = next(b for b in at.button if b.label == "Analyze all saved jobs with Ollama")
+    analyze_button = next(b for b in at.button if b.label.startswith("Analyze all saved jobs"))
     analyze_button.click().run()
 
     assert not at.exception
@@ -132,7 +146,7 @@ def test_analyze_saved_jobs_reports_nothing_to_analyze_when_list_is_empty():
     at = AppTest.from_function(_render_resume).run()
     at.text_area(key="resume_text_area").set_value("Some resume.").run()
 
-    analyze_button = next(b for b in at.button if b.label == "Analyze all saved jobs with Ollama")
+    analyze_button = next(b for b in at.button if b.label.startswith("Analyze all saved jobs"))
     analyze_button.click().run()
 
     assert not at.exception
@@ -157,7 +171,7 @@ def test_analyze_saved_jobs_scores_records_with_ollama(monkeypatch):
     at = AppTest.from_function(_render_resume).run()
     at.text_area(key="resume_text_area").set_value("Some resume.").run()
 
-    analyze_button = next(b for b in at.button if b.label == "Analyze all saved jobs with Ollama")
+    analyze_button = next(b for b in at.button if b.label.startswith("Analyze all saved jobs"))
     analyze_button.click().run()
 
     assert not at.exception

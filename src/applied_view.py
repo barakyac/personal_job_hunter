@@ -5,9 +5,10 @@ import streamlit as st
 from src import storage
 
 
-def render() -> None:
-    st.header("Edit Applications")
-    st.caption("Bulk-editable table of applied roles, with current status. See Applied Positions for the stage-by-stage board.")
+def render(show_header: bool = True) -> None:
+    if show_header:
+        st.header("Edit Applications")
+        st.caption("Bulk-editable table of applied roles, with current status. See the Board view for the stage-by-stage layout.")
 
     applied = storage.load_applied()
     df = storage.to_dataframe(

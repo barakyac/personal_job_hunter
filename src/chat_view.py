@@ -120,7 +120,7 @@ def render(on_hide: Callable[[], None] | None = None) -> None:
     history = st.container(height=500)
     if not st.session_state[SESSION_KEY]:
         with history:
-            st.caption("No messages yet — ask about your job search, resume, or tracked positions below.")
+            st.caption("No messages yet - ask about your job search, resume, or tracked positions below.")
     for msg in st.session_state[SESSION_KEY]:
         with history.chat_message(msg["role"]):
             st.write(msg["content"])

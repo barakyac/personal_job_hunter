@@ -159,7 +159,7 @@ def test_reconnect_popup_result_reruns_and_stays_connected(monkeypatch):
     assert "rt2" in decrypted.decode("utf-8")
 
 
-def test_disconnect_button_clears_connection_and_shows_connect_form(monkeypatch):
+def test_disconnect_button_opens_confirmation_dialog_without_disconnecting(monkeypatch):
     _connect()
     from src import mail_view
 
@@ -168,17 +168,25 @@ def test_disconnect_button_clears_connection_and_shows_connect_form(monkeypatch)
     monkeypatch.setattr(gmail_client, "get_connected_email", lambda service=None: "me@gmail.com")
     monkeypatch.setattr(gmail_client, "search_messages", lambda *a, **k: [])
 
-    def fake_disconnect():
-        gmail_client.token_file().unlink(missing_ok=True)
-
-    monkeypatch.setattr(gmail_client, "disconnect", fake_disconnect)
-
     at = AppTest.from_function(_render_mail).run()
     at.button(key="disconnect_gmail_btn").click().run()
 
     assert not at.exception
-    assert not gmail_client.token_file().exists()
-    assert any("Connect Gmail" in s.value for s in at.subheader)
+    # Still connected - a single click only opens the confirmation dialog,
+    # it doesn't disconnect yet (see mail_view._confirm_disconnect_dialog).
+    assert gmail_client.token_file().exists()
+    assert at.button(key="confirm_disconnect_gmail_btn") is not None
+
+
+def test_disconnect_gmail_calls_gmail_client_disconnect(monkeypatch):
+    from src import mail_view
+
+    calls = []
+    monkeypatch.setattr(gmail_client, "disconnect", lambda: calls.append(True))
+
+    mail_view._disconnect_gmail()
+
+    assert calls == [True]
 
 
 def test_shows_placeholder_when_no_applied_positions(monkeypatch):
@@ -564,7 +572,7 @@ def test_reset_control_hidden_from_non_localhost_visitor(monkeypatch):
     assert not any(b.label == "Reset Gmail setup" for b in at.button)
 
 
-def test_reset_control_clears_config_and_returns_to_setup_form(monkeypatch):
+def test_reset_control_opens_confirmation_dialog_without_resetting(monkeypatch):
     gmail_client.save_oauth_config("123.apps.googleusercontent.com", "shh-secret")
     monkeypatch.setattr(gmail_client, "is_localhost_request", lambda: True)
     from src import mail_view
@@ -576,9 +584,21 @@ def test_reset_control_clears_config_and_returns_to_setup_form(monkeypatch):
     at = at.button(key="reset_gmail_setup_btn").click().run()
 
     assert not at.exception
-    assert not gmail_client.has_persisted_config()
-    assert not gmail_client.is_app_configured()
-    assert any("Set up Gmail connection" in s.value for s in at.subheader)
+    # Still configured - a single click only opens the confirmation dialog,
+    # it doesn't reset yet (see mail_view._confirm_reset_dialog).
+    assert gmail_client.has_persisted_config()
+    assert at.button(key="confirm_reset_gmail_btn") is not None
+
+
+def test_reset_gmail_setup_calls_clear_oauth_config(monkeypatch):
+    from src import mail_view
+
+    calls = []
+    monkeypatch.setattr(gmail_client, "clear_oauth_config", lambda: calls.append(True))
+
+    mail_view._reset_gmail_setup()
+
+    assert calls == [True]
 
 
 def _connect_with_acme_email(monkeypatch) -> None:
@@ -1505,7 +1525,7 @@ def test_manual_status_control_hidden_when_company_is_ambiguous(monkeypatch):
 
     assert not at.exception
     assert not any(b.key == "manual_status_btn_Acme" for b in at.button)
-    assert any("Edit Applications page" in c.value for c in at.caption)
+    assert any("Applications page" in c.value for c in at.caption)
 
 
 def _connect_for_unlisted_scan(monkeypatch) -> None:
@@ -1550,7 +1570,7 @@ def test_find_untracked_applications_classifies_and_shows_add_dismiss(monkeypatc
     at = at.button(key="scan_unlisted_btn").click().run()
 
     assert not at.exception
-    assert any("Not Yet Tracked (1)" in s.value for s in at.subheader)
+    assert any("Untracked applications (1)" in s.value for s in at.subheader)
     assert any(b.key == "add_unlisted_app-1" for b in at.button)
     assert any(b.key == "dismiss_unlisted_app-1" for b in at.button)
     assert any("Acme" in c.value for c in at.caption)
