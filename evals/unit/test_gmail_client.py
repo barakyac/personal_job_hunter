@@ -18,8 +18,58 @@ def _write_encrypted_token(path, key: bytes, payload: bytes = b"{}") -> None:
 
 
 def test_build_company_query():
-    assert gmail_client.build_company_query("Acme Corp") == '"Acme Corp"'
+    query = gmail_client.build_company_query("Acme Corp")
+    # Scoped to the subject, not a full-text body match - a bare body
+    # mention (a newsletter plugging an unrelated course "in partnership
+    # with Acme Corp", a promo listing it among other brand names, a
+    # calendar invite's .ics metadata) isn't actually about an application.
+    assert 'subject:"Acme Corp"' in query
+    assert '"Acme Corp"' not in query.replace('subject:"Acme Corp"', "")
+    # Excludes job-alert digest senders, which can still name a tracked
+    # company directly in the subject ("Senior Engineer at Acme Corp and 9
+    # more jobs...") - that's a new job ad, not an application update.
+    assert '-from:("LinkedIn Job Alerts")' in query
+    assert '-from:("Glassdoor Jobs")' in query
     assert gmail_client.build_company_query("  ") == ""
+
+
+def test_build_company_query_also_tries_the_part_before_the_dot_for_a_domain_shaped_name():
+    """A company saved as its own domain (e.g. "Koda.security") won't
+    actually be spelled that way in real mail about it - observed live,
+    Koda's own screening-interview invite names it in the subject as plain
+    "Koda", never "Koda.security", so the exact phrase alone matched
+    nothing."""
+    query = gmail_client.build_company_query("Koda.security")
+    assert 'subject:"Koda.security"' in query
+    assert 'subject:"Koda"' in query
+    assert " OR " in query
+
+
+def test_build_company_query_skips_the_dot_fallback_when_the_name_has_no_dot():
+    query = gmail_client.build_company_query("Acme Corp")
+    assert query.count("subject:") == 1
+
+
+def test_build_company_query_excludes_a_digest_that_names_the_company_in_its_own_subject():
+    """A LinkedIn/Glassdoor digest's subject sometimes names a tracked
+    company directly, not just buried in the body - observed live, a
+    Glassdoor digest titled "System Integration Engineer at Applied
+    Materials and 9 more jobs in Tel Aviv-Yafo for you. Apply Now."
+    (genericized here to Acme). That's a new job ad, not an update on an
+    existing application, so the sender exclusion has to hold regardless
+    of whether the company name is in the subject or buried in the body -
+    it can't be allowed to only cover the body-match case."""
+    digest_subject = "System Integration Engineer at Acme and 9 more jobs in Tel Aviv-Yafo for you. Apply Now."
+    # The digest subject above does name the company - confirms this test
+    # is guarding the right case (a subject match), not a body-only one
+    # that subject-scoping would already rule out by itself.
+    assert "Acme" in digest_subject
+
+    query = gmail_client.build_company_query("Acme")
+    # Only the sender exclusion stops that digest from surfacing as an
+    # "update" on the Acme application.
+    assert '-from:("Glassdoor Jobs")' in query
+    assert '-from:("LinkedIn Job Alerts")' in query
 
 
 def test_build_new_opportunities_query():
@@ -41,6 +91,25 @@ def test_build_unlisted_applications_query_excludes_known_companies():
     assert '"thank you for applying"' in query
     assert '-subject:"Acme"' in query
     assert '-subject:"Globex"' in query
+
+
+def test_application_received_phrases_do_not_catch_an_ats_identity_verification_email():
+    """Locks in a known gap, not a fix: an ATS identity-verification
+    "action needed" email can say "Thank you for your application" without
+    matching any phrase in APPLICATION_RECEIVED_PHRASES - observed live
+    (Akamai, genericized here): "Thank you for your application. Just one
+    more step before you get started. You must confirm your identity using
+    the one-time passcode: ######." None of "thank you for applying", "we
+    received your application", etc. is an exact substring of that text,
+    so the untracked-applications keyword query would never surface it.
+    Documented here so a future change to the phrase list is a deliberate
+    decision, not an accidental regression discovered the hard way again."""
+    email_text = (
+        "Hello Jordan Smith, Thank you for your application. Just one more step before you get "
+        "started. You must confirm your identity using the one-time passcode: 000000. Note: This "
+        "code will expire in 10 minutes."
+    ).lower()
+    assert not any(phrase in email_text for phrase in gmail_client.APPLICATION_RECEIVED_PHRASES)
 
 
 def test_build_unlisted_applications_query_skips_blank_company_names():

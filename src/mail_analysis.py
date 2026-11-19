@@ -47,15 +47,19 @@ def build_prompt(company: str, messages: list[dict]) -> str:
     status_lines = "\n".join(f"- {s}: {STATUS_DEFINITIONS[s]}" for s in STATUS_OPTIONS)
     return f"""Company: {company}
 
-Possible stages (pick the one whose definition best matches what the emails describe):
+Possible stages (pick whichever definition(s) best match what the emails describe):
 {status_lines}
 
 Emails found for this company:
 {mail_lines}
 
-Based only on these emails, what stage does the hiring process show, if any clear signal is present?
+Based only on these emails, what stage(s) does the hiring process show? Usually that's exactly one
+stage - list more than one only when different emails genuinely show different stages (e.g. an older
+email about an initial screening call and a separate, newer email about a later interview), ordered
+most-advanced-first so the user can pick the right one. Leave the list empty if there's no clear signal
+beyond generic job-alert noise.
 Respond ONLY with JSON in this exact shape:
-{{"implied_status": "<one of the possible stages these specific emails show, or empty string if there is no clear signal beyond generic job-alert noise>", "reason": "<one sentence citing what in the emails shows this>"}}"""
+{{"stages": [{{"status": "<one of the possible stages>", "reason": "<one sentence citing what in the emails shows this>"}}]}}"""
 
 
 def analyze_company_mail(
@@ -81,20 +85,31 @@ def analyze_company_mail(
     show (not also compare it against current_status - seemed to help, see
     build_prompt) - a best-effort pass for progressions that are lower-
     stakes to occasionally miss, not caught by a comparable heuristic, and
-    still recoverable via the per-company "Analyze with AI" button.
+    still recoverable via the per-company "Analyze with AI" button. Unlike
+    the single, deterministic rejection shortcut, this path can surface
+    more than one candidate stage (see "candidates" below) - different
+    emails for the same company sometimes show genuinely different stages
+    (e.g. an older screening-call email and a separate, newer interview
+    email), and picking one on the user's behalf would silently discard
+    the other.
 
-    Returns {"action": "update_status"|"none", "new_status": str, "reason": str} -
-    never writes anything; the caller decides whether to act on it."""
+    Returns {"action": "update_status"|"none", "new_status": str, "reason": str,
+    "candidates": [{"new_status": str, "reason": str}, ...]} - "new_status"/"reason"
+    is always candidates[0] (kept for callers that only want the single best
+    guess); "candidates" is omitted when action is "none". Never writes
+    anything; the caller decides whether to act on it."""
     if not messages:
         return {"action": "none", "new_status": "", "reason": ""}
 
     if current_status not in storage.OUTCOME_STATUSES:
         rejection_msg = next((m for m in messages if m.get("looks_like_rejection")), None)
         if rejection_msg:
+            reason = f"This email looks like a rejection: \"{rejection_msg['subject']}\""
             return {
                 "action": "update_status",
                 "new_status": "Rejected",
-                "reason": f"This email looks like a rejection: \"{rejection_msg['subject']}\"",
+                "reason": reason,
+                "candidates": [{"new_status": "Rejected", "reason": reason}],
             }
 
     prompt = build_prompt(company, messages)
@@ -102,28 +117,40 @@ def analyze_company_mail(
     if not isinstance(result, dict):
         return {"action": "none", "new_status": "", "reason": ""}
 
-    raw_status = (result.get("implied_status") or "").strip()
+    raw_stages = result.get("stages")
+    if not isinstance(raw_stages, list):
+        raw_stages = []
+
     status_by_lower = {s.lower(): s for s in STATUS_OPTIONS}
-    implied_status = status_by_lower.get(raw_status.lower(), "")
+    candidates = []
+    seen_statuses = set()
+    for entry in raw_stages:
+        if not isinstance(entry, dict):
+            continue
+        raw_status = (entry.get("status") or "").strip()
+        status = status_by_lower.get(raw_status.lower(), "")
 
-    # "Applied" is the pipeline's baseline/entry stage - no real email ever
-    # legitimately moves an application backward to it once it's further
-    # along, so a model answer of "Applied" here is indistinguishable from
-    # it defaulting to the first item in the possible-stages list when it
-    # actually has no real signal (observed live: it called an already-
-    # Rejected application's unrelated job-alert noise "Applied" even while
-    # its own "reason" said there was no stage signal at all). Treat it the
-    # same as an empty implied_status rather than let it regress anything.
-    if implied_status == "Applied":
-        implied_status = ""
+        # "Applied" is the pipeline's baseline/entry stage - no real email
+        # ever legitimately moves an application backward to it once it's
+        # further along, so a model answer of "Applied" here is
+        # indistinguishable from it defaulting to the first possible-stage
+        # when it actually has no real signal (observed live: it called an
+        # already-Rejected application's unrelated job-alert noise
+        # "Applied" even while its own "reason" said there was no stage
+        # signal at all). Drop it rather than let it regress anything.
+        # Also drop a stage that's already the current one - nothing to
+        # suggest - and any duplicate the model repeated.
+        if not status or status == "Applied" or status == current_status or status in seen_statuses:
+            continue
+        seen_statuses.add(status)
+        candidates.append({"new_status": status, "reason": (entry.get("reason") or "").strip()})
 
-    if implied_status and implied_status != current_status:
-        action, new_status = "update_status", implied_status
-    else:
-        action, new_status = "none", ""
+    if not candidates:
+        return {"action": "none", "new_status": "", "reason": ""}
 
     return {
-        "action": action,
-        "new_status": new_status,
-        "reason": result.get("reason", ""),
+        "action": "update_status",
+        "new_status": candidates[0]["new_status"],
+        "reason": candidates[0]["reason"],
+        "candidates": candidates,
     }

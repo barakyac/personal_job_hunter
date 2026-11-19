@@ -1,6 +1,6 @@
 from streamlit.testing.v1 import AppTest
 
-from src import job_extract, storage
+from src import fit_analysis, job_extract, storage
 
 
 def _render_saved():
@@ -70,15 +70,64 @@ def test_paste_popover_rejects_missing_link():
     assert any("Add the job link first" in e.value for e in at.error)
 
 
-def test_paste_popover_rejects_empty_description():
-    at = AppTest.from_function(_render_saved).run()
+def test_paste_popover_fetches_description_from_link_when_left_blank(monkeypatch):
+    """The core of "save a position from just a link": leaving the
+    description blank fetches the posting text automatically instead of
+    requiring it to be pasted by hand."""
+    monkeypatch.setattr(fit_analysis, "fetch_posting_text", lambda link: "We are Acme, hiring a Backend Engineer.")
+    monkeypatch.setattr(
+        job_extract,
+        "extract_fields",
+        lambda description: {
+            "company": "Acme", "title": "Backend Engineer", "location": "Remote", "salary": "100k"
+        },
+    )
 
+    at = AppTest.from_function(_render_saved).run()
     at.text_input(key="paste_description_link_0").set_value("https://acme.example/jobs/1")
     at.button(key="create_from_paste_btn").click().run()
 
     assert not at.exception
+    records = storage.load_saved()
+    assert len(records) == 1
+    assert records[0]["company"] == "Acme"
+    assert records[0]["description"] == "We are Acme, hiring a Backend Engineer."
+    assert records[0]["link"] == "https://acme.example/jobs/1"
+
+
+def test_paste_popover_prefers_a_pasted_description_over_fetching(monkeypatch):
+    """A pasted description is the fallback for sites that block a plain
+    fetch (LinkedIn, Workday, ...) - it must win over auto-fetching, and
+    fetch_posting_text must not even be called when one was pasted."""
+    def fail_if_called(link):
+        raise AssertionError("fetch_posting_text should not be called when a description was pasted")
+
+    monkeypatch.setattr(fit_analysis, "fetch_posting_text", fail_if_called)
+    monkeypatch.setattr(
+        job_extract,
+        "extract_fields",
+        lambda description: {"company": "Acme", "title": "Backend", "location": "", "salary": ""},
+    )
+
+    at = AppTest.from_function(_render_saved).run()
+    at.text_input(key="paste_description_link_0").set_value("https://acme.example/jobs/1")
+    at.text_area(key="paste_description_text_0").set_value("We are Acme, hiring.")
+    at.button(key="create_from_paste_btn").click().run()
+
+    assert not at.exception
+    assert storage.load_saved()[0]["description"] == "We are Acme, hiring."
+
+
+def test_paste_popover_shows_error_when_the_link_cant_be_fetched_and_nothing_was_pasted(monkeypatch):
+    monkeypatch.setattr(fit_analysis, "fetch_posting_text", lambda link: "")
+
+    at = AppTest.from_function(_render_saved).run()
+    at.text_input(key="paste_description_link_0").set_value("https://linkedin.com/jobs/view/123")
+    at.button(key="create_from_paste_btn").click().run()
+
+    assert not at.exception
     assert storage.load_saved() == []
-    assert any("Paste a job description first" in e.value for e in at.error)
+    assert any("Couldn't fetch that page automatically" in e.value for e in at.error)
 
 
 def test_paste_popover_surfaces_ollama_error(monkeypatch):

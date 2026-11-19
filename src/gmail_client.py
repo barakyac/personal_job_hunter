@@ -81,7 +81,10 @@ NEW_OPPORTUNITY_FROM_NAMES = ['"LinkedIn Job Alerts"', '"Glassdoor Jobs"']
 # Phrases that show up in an ATS's "we got your application" auto-reply,
 # regardless of which company sent it - used to find applications that
 # were never added to this app at all (as opposed to build_company_query,
-# which only ever looks at companies already tracked here).
+# which only ever looks at companies already tracked here). Also covers a
+# Workday-style referral notice ("you've been referred..."), which this app
+# treats as an application the moment it's sent, not just an invitation to
+# apply - see mail_view._add_unlisted_as_applied.
 APPLICATION_RECEIVED_PHRASES = [
     "thank you for applying",
     "thanks for applying",
@@ -89,6 +92,9 @@ APPLICATION_RECEIVED_PHRASES = [
     "your application has been received",
     "application received",
     "application has been submitted",
+    "referred you for an opportunity",
+    "you've been referred",
+    "you have been referred",
 ]
 
 
@@ -350,10 +356,50 @@ def looks_like_rejection(text: str) -> bool:
 
 
 def build_company_query(company: str) -> str:
-    """Gmail search query matching mail that mentions the given company by
-    name, in either the subject or body."""
+    """Gmail search query matching mail that's actually *about* the given
+    company - scoped to the subject line, not a full-text body match.
+    Every real signal email seen live so far (a referral notice, an ATS
+    confirmation, an "action needed" follow-up) names the company in its
+    subject; a full-text match on the body, by contrast, kept catching mail
+    that only mentions the company in passing and isn't about an
+    application at all - a Coursera promo ("Learn from experts at Google,
+    IBM, and Microsoft"), a BGU alumni newsletter plugging an unrelated
+    course "in partnership with Microsoft", and an Outlook/Exchange meeting
+    invite's .ics attachment (which embeds Microsoft's own calendar
+    metadata regardless of sender - this specifically once fed an unrelated
+    company's "Screening Interview" invite to the AI analyzer as if it were
+    a Microsoft interview, wrongly moving that application to "First
+    Call"). Scoping to the subject eliminates all of that at once, the same
+    way _exclude_known_companies already scopes its own exclusion to the
+    subject for the mirror-image reason (a blanket body exclusion
+    false-excludes real mail that merely mentions a tracked company in
+    passing).
+
+    Also excludes job-alert digest senders (see NEW_OPPORTUNITY_FROM_NAMES)
+    - a LinkedIn/Glassdoor digest's subject sometimes *does* name a tracked
+    company directly ("Senior Engineer at Acme and 9 more jobs..."), but
+    that's a new job ad, not an update on an application; that case is
+    already handled by build_new_opportunities_query instead.
+
+    When the tracked company name is itself domain-shaped (e.g.
+    "Koda.security", saved that way because that's the company's own
+    website/email domain), also searches for just the part before the
+    first "." - observed live: real mail about Koda refers to it in the
+    subject as plain "Koda" ("Koda- Screening Interview"), never spelling
+    out ".security", so subject:"Koda.security" alone matched nothing."""
     company = company.strip()
-    return f'"{company}"' if company else ""
+    if not company:
+        return ""
+    terms = [company]
+    if "." in company:
+        prefix = company.split(".", 1)[0].strip()
+        if prefix and prefix.lower() != company.lower():
+            terms.append(prefix)
+    subject_clause = " OR ".join(f'subject:"{t}"' for t in terms)
+    if len(terms) > 1:
+        subject_clause = f"({subject_clause})"
+    exclusions = " ".join(f"-from:({s})" for s in NEW_OPPORTUNITY_FROM_NAMES)
+    return f"{subject_clause} {exclusions}"
 
 
 def _exclude_known_companies(query: str, known_companies: list[str]) -> str:

@@ -2,7 +2,7 @@ import datetime as dt
 
 import streamlit as st
 
-from src import gmail_client, job_extract, mail_analysis, ollama_client, storage
+from src import fit_analysis, gmail_client, job_extract, mail_analysis, ollama_client, storage
 
 SCAN_RESULTS_KEY = "gmail_scan_results"
 OPPORTUNITIES_KEY = "gmail_new_opportunities"
@@ -239,13 +239,15 @@ def _scan_opportunities() -> None:
 
 
 def _scan_unlisted_applications(known_companies: list[str]) -> None:
-    """Find application-confirmation mail about companies this app doesn't
-    track at all (neither Applied nor Saved), then classify each match one
-    at a time with Ollama - the keyword-based Gmail query is just a first
-    pass, so a message only counts if the model can actually pull a company
-    name out of it. Unlike _scan_applications/_scan_opportunities (cheap
-    metadata-only reads), this one calls Ollama per match, so it's manual,
-    not auto-run."""
+    """Find application-confirmation (and referral) mail about companies
+    this app doesn't track at all (neither Applied nor Saved), then
+    classify each match one at a time with Ollama - the keyword-based
+    Gmail query is just a first pass, so a message only counts if the
+    model can actually pull a company name out of it. Unlike
+    _scan_applications/_scan_opportunities (cheap metadata-only reads),
+    this one calls Ollama per match - still auto-run once per session (see
+    render()), since the match count per scan is small (max 15, gated by
+    the keyword query)."""
     with st.spinner("Scanning Gmail for applications not tracked here..."):
         try:
             service = gmail_client.get_service()
@@ -405,6 +407,17 @@ def _render_pending_suggestions() -> None:
     st.divider()
 
 
+def _approve_candidate(company: str, new_status: str, current_status: str) -> None:
+    if _apply_suggestion(company, new_status, current_status):
+        st.success(f"{company} moved to {new_status}.")
+    else:
+        st.warning(
+            f"Couldn't update {company} - its application record changed since this "
+            "suggestion was generated. Update its status manually instead."
+        )
+    st.rerun()
+
+
 def _render_analysis(company: str, key_suffix: str = "panel") -> None:
     suggestion = st.session_state.get(ANALYSIS_KEY, {}).get(company)
     if not suggestion:
@@ -421,27 +434,47 @@ def _render_analysis(company: str, key_suffix: str = "panel") -> None:
         st.info("AI review: no status change found in these emails.")
         return
 
-    new_status = suggestion["new_status"]
     current_status = suggestion["current_status"]
+    # mail_analysis.analyze_company_mail can surface more than one candidate
+    # stage when different emails for this company show different stages
+    # (e.g. an older screening-call email and a separate, newer interview
+    # email) - falls back to the single new_status/reason pair for any
+    # older suggestion dict that predates "candidates".
+    candidates = suggestion.get("candidates") or [
+        {"new_status": suggestion["new_status"], "reason": suggestion.get("reason", "")}
+    ]
+
+    if len(candidates) == 1:
+        new_status = candidates[0]["new_status"]
+        st.info(
+            f"AI suggests moving this application from **{current_status}** to "
+            f"**{new_status}**: {candidates[0].get('reason', '')}"
+        )
+        approve_col, dismiss_col = st.columns(2)
+        with approve_col:
+            if st.button(f"Approve - set to {new_status}", key=f"approve_status_{company}_{key_suffix}"):
+                _approve_candidate(company, new_status, current_status)
+        with dismiss_col:
+            if st.button("Dismiss", key=f"dismiss_status_{company}_{key_suffix}"):
+                st.session_state.get(ANALYSIS_KEY, {}).pop(company, None)
+                st.rerun()
+        return
+
     st.info(
-        f"AI suggests moving this application from **{current_status}** to "
-        f"**{new_status}**: {suggestion.get('reason', '')}"
+        f"AI found {len(candidates)} possible stages in these emails for this application "
+        f"(currently **{current_status}**) - different emails point to different stages, pick the "
+        "right one:"
     )
-    approve_col, dismiss_col = st.columns(2)
-    with approve_col:
-        if st.button(f"Approve - set to {new_status}", key=f"approve_status_{company}_{key_suffix}"):
-            if _apply_suggestion(company, new_status, current_status):
-                st.success(f"{company} moved to {new_status}.")
-            else:
-                st.warning(
-                    f"Couldn't update {company} - its application record changed since this "
-                    "suggestion was generated. Update its status manually instead."
-                )
-            st.rerun()
-    with dismiss_col:
-        if st.button("Dismiss", key=f"dismiss_status_{company}_{key_suffix}"):
-            st.session_state.get(ANALYSIS_KEY, {}).pop(company, None)
-            st.rerun()
+    for candidate in candidates:
+        new_status = candidate["new_status"]
+        st.caption(f"**{new_status}**: {candidate.get('reason', '')}")
+        if st.button(
+            f"Set to {new_status}", key=f"approve_status_{company}_{key_suffix}_{new_status}"
+        ):
+            _approve_candidate(company, new_status, current_status)
+    if st.button("Dismiss", key=f"dismiss_status_{company}_{key_suffix}"):
+        st.session_state.get(ANALYSIS_KEY, {}).pop(company, None)
+        st.rerun()
 
 
 def _render_message(msg: dict) -> None:
@@ -464,6 +497,38 @@ def _company_already_tracked(company: str) -> bool:
     return any((r.get("company") or "").strip().lower() == company for records in tracked for r in records)
 
 
+def _fetch_description(link: str) -> str:
+    """Best-effort pull of the posting's own text for the description field,
+    so fit_analysis.analyze() doesn't have to fetch it again later. Sites
+    that block a plain scripted request (LinkedIn included) just come back
+    empty here - see tools/description_extractor.py for backfilling those
+    from a logged-in browser."""
+    try:
+        return fit_analysis.fetch_posting_text(link)
+    except Exception:
+        return ""
+
+
+def _refine_fields_from_description(fields: dict, description: str) -> dict:
+    """Best-effort re-extraction of company/title/location/salary from the
+    one job's own posting text (fetched via its already-disambiguated
+    link), which is more trustworthy than the subject+snippet guess
+    extract_opportunity_fields() has to make: a digest email's body mixes
+    several job cards, but the posting page it links to is about just this
+    one. Falls back to the original field whenever the posting page
+    doesn't state a value, or the extraction itself fails."""
+    try:
+        refined = job_extract.extract_fields(description)
+    except Exception:
+        return fields
+    return {
+        "company": refined["company"] or fields["company"],
+        "title": refined["title"] or fields["title"],
+        "location": refined["location"] or fields["location"],
+        "salary": refined["salary"] or fields["salary"],
+    }
+
+
 def _add_opportunity_as_saved(msg: dict) -> tuple[str, bool]:
     """Pull company/title/location/salary out of a job-alert email and add
     it as a new Saved Position, via job_extract.extract_opportunity_fields()
@@ -477,10 +542,14 @@ def _add_opportunity_as_saved(msg: dict) -> tuple[str, bool]:
     fetched separately via gmail_client.get_message_link() - a one-off
     full-body read of just this message, done only because the user chose
     to add it. If that lookup fails or finds nothing, the record is still
-    added with an empty link for the user to fill in. Raises
-    ollama_client.OllamaError on failure to extract fields; writes nothing
-    to storage or session state in that case. Does not rerun - callers
-    (single or bulk) decide when to do that.
+    added with an empty link for the user to fill in. Once the link is
+    known, its posting text is fetched for the description field and,
+    unlike the digest email body, is about this one job only - so it's
+    used to refine the subject/snippet-based fields too (see
+    _refine_fields_from_description). Raises ollama_client.OllamaError on
+    failure to extract fields; writes nothing to storage or session state
+    in that case. Does not rerun - callers (single or bulk) decide when to
+    do that.
 
     Returns (company, was_added) - was_added is False, and nothing is
     written, when the company is already tracked in Saved or Applied
@@ -500,9 +569,13 @@ def _add_opportunity_as_saved(msg: dict) -> tuple[str, bool]:
     except Exception:
         link = ""
 
+    description = _fetch_description(link)
+    if description:
+        fields = _refine_fields_from_description(fields, description)
+
     records = storage.load_saved()
     records.append({
-        "company": company,
+        "company": fields["company"],
         "title": fields["title"],
         "link": link,
         "location": fields["location"],
@@ -510,11 +583,11 @@ def _add_opportunity_as_saved(msg: dict) -> tuple[str, bool]:
         "posting_status": storage.POSTING_STATUS_OPEN,
         "date_saved": dt.date.today().isoformat(),
         "notes": f"From job-alert email: {msg['subject']}",
-        "description": msg["snippet"],
+        "description": description,
     })
     storage.save_saved(records)
     st.session_state.setdefault(OPPORTUNITY_ACTIONS_KEY, {})[msg["id"]] = "added"
-    return company, True
+    return fields["company"], True
 
 
 def _add_all_opportunities(opportunities: list[dict]) -> None:
@@ -616,7 +689,7 @@ def _add_unlisted_as_applied(item: dict) -> None:
         "date_applied": today,
         "status": "Applied",
         "notes": f"From job-application email: {msg['subject']}",
-        "description": msg["snippet"],
+        "description": _fetch_description(link),
     })
     storage.save_applied(records)
     st.session_state.setdefault(UNLISTED_ACTIONS_KEY, {})[msg["id"]] = "added"
@@ -666,12 +739,17 @@ def render() -> None:
         {(r.get("company") or "").strip() for r in applied if (r.get("company") or "").strip()}
     )
 
+    unlisted_known_companies = companies + [r.get("company", "") for r in storage.load_saved()]
+
     # Auto-scan once per session as soon as Gmail is connected, so results
-    # (and any rejection/opportunity alerts) show up without a manual click.
+    # (and any rejection/opportunity/untracked-application alerts) show up
+    # without a manual click.
     if companies and SCAN_RESULTS_KEY not in st.session_state:
         _scan_applications(companies)
     if OPPORTUNITIES_KEY not in st.session_state:
         _scan_opportunities()
+    if UNLISTED_KEY not in st.session_state:
+        _scan_unlisted_applications(unlisted_known_companies)
 
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -682,9 +760,9 @@ def render() -> None:
             _scan_opportunities()
     with col3:
         if st.button(
-            f"Find untracked applications ({job_extract.DEFAULT_MODEL})", key="scan_unlisted_btn"
+            f"Rescan untracked applications ({job_extract.DEFAULT_MODEL})", key="scan_unlisted_btn"
         ):
-            _scan_unlisted_applications(companies + [r.get("company", "") for r in storage.load_saved()])
+            _scan_unlisted_applications(unlisted_known_companies)
 
     # Rendered after any scan above has had a chance to run this pass, so a
     # fresh sync shows up immediately instead of a run behind.
@@ -730,7 +808,28 @@ def render() -> None:
     if not companies:
         st.info("No applied positions yet - add some on the Applied Positions page.")
     elif results:
-        analyzable_companies = [c for c in companies if isinstance(results.get(c), list) and results.get(c)]
+        # A company already at a final outcome (Offer/Rejected/Withdrawn)
+        # has nowhere left to move to, so "Analyze all" skips it rather
+        # than spend an Ollama call re-checking mail for a status change
+        # that can't happen. Only applies when the company resolves to a
+        # single record - an ambiguous one (multiple records, see
+        # _analyze_company) is left in, since its outcome isn't settled
+        # either way. The per-company "Analyze with AI" button is
+        # unaffected, for a manual recheck.
+        company_statuses: dict[str, list[str]] = {}
+        for r in applied:
+            c = (r.get("company") or "").strip()
+            if c:
+                company_statuses.setdefault(c, []).append(r.get("status") or "Applied")
+        final_companies = {
+            c for c, statuses in company_statuses.items()
+            if len(statuses) == 1 and statuses[0] in storage.OUTCOME_STATUSES
+        }
+
+        analyzable_companies = [
+            c for c in companies
+            if isinstance(results.get(c), list) and results.get(c) and c not in final_companies
+        ]
         if analyzable_companies and st.button(
             f"Analyze all applications with AI ({mail_analysis.DEFAULT_MODEL})", key="analyze_all_mail_btn"
         ):

@@ -24,7 +24,7 @@ def test_build_prompt_does_not_leak_current_status():
     mention a current status, only ask what the emails show."""
     prompt = mail_analysis.build_prompt("Acme", MESSAGES)
     assert "current status" not in prompt.lower()
-    assert "implied_status" in prompt
+    assert '"stages"' in prompt
 
 
 def test_analyze_company_mail_returns_none_when_no_messages():
@@ -32,9 +32,9 @@ def test_analyze_company_mail_returns_none_when_no_messages():
     assert result == {"action": "none", "new_status": "", "reason": ""}
 
 
-def test_analyze_company_mail_flags_an_implied_status_different_from_current(monkeypatch):
+def test_analyze_company_mail_flags_a_stage_different_from_current(monkeypatch):
     def fake_chat_json(system, user, model=ollama_client.DEFAULT_MODEL):
-        return {"implied_status": "Rejected", "reason": "Clear rejection email."}
+        return {"stages": [{"status": "Rejected", "reason": "Clear rejection email."}]}
 
     monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
 
@@ -43,11 +43,12 @@ def test_analyze_company_mail_flags_an_implied_status_different_from_current(mon
     assert result["action"] == "update_status"
     assert result["new_status"] == "Rejected"
     assert result["reason"] == "Clear rejection email."
+    assert result["candidates"] == [{"new_status": "Rejected", "reason": "Clear rejection email."}]
 
 
 def test_analyze_company_mail_rejects_unknown_status(monkeypatch):
     def fake_chat_json(system, user, model=ollama_client.DEFAULT_MODEL):
-        return {"implied_status": "Ghosted", "reason": "made up status"}
+        return {"stages": [{"status": "Ghosted", "reason": "made up status"}]}
 
     monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
 
@@ -66,7 +67,7 @@ def test_analyze_company_mail_treats_same_status_as_no_change(monkeypatch):
     "already there" case is trivially correct and the "different" case
     (tested above) can no longer silently fail the same way."""
     def fake_chat_json(system, user, model=ollama_client.DEFAULT_MODEL):
-        return {"implied_status": "Applied", "reason": "nothing new"}
+        return {"stages": [{"status": "Applied", "reason": "nothing new"}]}
 
     monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
 
@@ -78,19 +79,18 @@ def test_analyze_company_mail_treats_same_status_as_no_change(monkeypatch):
 
 def test_analyze_company_mail_passes_through_no_signal(monkeypatch):
     def fake_chat_json(system, user, model=ollama_client.DEFAULT_MODEL):
-        return {"implied_status": "", "reason": "just a LinkedIn alert"}
+        return {"stages": []}
 
     monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
 
     result = mail_analysis.analyze_company_mail("Acme", "Applied", MESSAGES)
 
-    assert result["action"] == "none"
-    assert result["reason"] == "just a LinkedIn alert"
+    assert result == {"action": "none", "new_status": "", "reason": ""}
 
 
 def test_analyze_company_mail_accepts_case_insensitive_status(monkeypatch):
     def fake_chat_json(system, user, model=ollama_client.DEFAULT_MODEL):
-        return {"implied_status": "rejected", "reason": "lowercase from the model"}
+        return {"stages": [{"status": "rejected", "reason": "lowercase from the model"}]}
 
     monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
 
@@ -111,9 +111,20 @@ def test_analyze_company_mail_handles_non_dict_response(monkeypatch):
     assert result == {"action": "none", "new_status": "", "reason": ""}
 
 
+def test_analyze_company_mail_handles_stages_not_a_list(monkeypatch):
+    def fake_chat_json(system, user, model=ollama_client.DEFAULT_MODEL):
+        return {"stages": "First Call"}
+
+    monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
+
+    result = mail_analysis.analyze_company_mail("Acme", "Applied", MESSAGES)
+
+    assert result == {"action": "none", "new_status": "", "reason": ""}
+
+
 def test_analyze_company_mail_defaults_missing_reason_to_empty_string(monkeypatch):
     def fake_chat_json(system, user, model=ollama_client.DEFAULT_MODEL):
-        return {"implied_status": ""}
+        return {"stages": [{"status": "First Call"}]}
 
     monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
 
@@ -127,7 +138,7 @@ def test_analyze_company_mail_forwards_model_argument(monkeypatch):
 
     def fake_chat_json(system, user, model=ollama_client.DEFAULT_MODEL):
         captured["model"] = model
-        return {"implied_status": "", "reason": ""}
+        return {"stages": []}
 
     monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
 
@@ -174,13 +185,14 @@ def test_analyze_company_mail_catches_rejection_via_keyword_heuristic_without_ca
     assert result["action"] == "update_status"
     assert result["new_status"] == "Rejected"
     assert "PAPAYA" in result["reason"]
+    assert result["candidates"] == [{"new_status": "Rejected", "reason": result["reason"]}]
 
 
 def test_analyze_company_mail_skips_rejection_shortcut_when_already_in_a_terminal_status(monkeypatch):
     """No point re-flagging a rejection once the application is already
     Rejected/Offer/Withdrawn - falls through to the normal model path."""
     def fake_chat_json(system, user, model=ollama_client.DEFAULT_MODEL):
-        return {"implied_status": "", "reason": "nothing new"}
+        return {"stages": []}
 
     monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
 
@@ -191,7 +203,7 @@ def test_analyze_company_mail_skips_rejection_shortcut_when_already_in_a_termina
 
 def test_analyze_company_mail_falls_through_to_ollama_when_no_message_looks_like_a_rejection(monkeypatch):
     def fake_chat_json(system, user, model=ollama_client.DEFAULT_MODEL):
-        return {"implied_status": "First Call", "reason": "screening call scheduled"}
+        return {"stages": [{"status": "First Call", "reason": "screening call scheduled"}]}
 
     monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
 
@@ -208,7 +220,7 @@ def test_analyze_company_mail_treats_applied_as_no_signal_rather_than_a_regressi
     regress an already-further-along application (e.g. Rejected) back to
     the baseline stage. No real email content legitimately does that."""
     def fake_chat_json(system, user, model=ollama_client.DEFAULT_MODEL):
-        return {"implied_status": "Applied", "reason": "no specific stage signals present"}
+        return {"stages": [{"status": "Applied", "reason": "no specific stage signals present"}]}
 
     monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
 
@@ -216,3 +228,65 @@ def test_analyze_company_mail_treats_applied_as_no_signal_rather_than_a_regressi
 
     assert result["action"] == "none"
     assert result["new_status"] == ""
+
+
+def test_analyze_company_mail_returns_multiple_candidates_when_different_emails_show_different_stages(
+    monkeypatch,
+):
+    """The core of this feature: when the model genuinely sees more than
+    one stage across the emails (e.g. an older screening-call email and a
+    separate, newer interview email), it must not be forced to pick just
+    one - the caller gets every valid candidate to show the user."""
+    def fake_chat_json(system, user, model=ollama_client.DEFAULT_MODEL):
+        return {
+            "stages": [
+                {"status": "Interview", "reason": "Newer email schedules a technical interview."},
+                {"status": "First Call", "reason": "Older email scheduled a screening call."},
+            ]
+        }
+
+    monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
+
+    result = mail_analysis.analyze_company_mail("Acme", "Applied", MESSAGES)
+
+    assert result["action"] == "update_status"
+    # new_status/reason stay the single best guess for callers that only want one.
+    assert result["new_status"] == "Interview"
+    assert result["candidates"] == [
+        {"new_status": "Interview", "reason": "Newer email schedules a technical interview."},
+        {"new_status": "First Call", "reason": "Older email scheduled a screening call."},
+    ]
+
+
+def test_analyze_company_mail_drops_a_candidate_matching_the_current_status(monkeypatch):
+    """No point suggesting a stage the application is already at - only
+    the genuinely new candidate should survive."""
+    def fake_chat_json(system, user, model=ollama_client.DEFAULT_MODEL):
+        return {
+            "stages": [
+                {"status": "First Call", "reason": "Already had the screening call."},
+                {"status": "Interview", "reason": "Now scheduled for a technical interview."},
+            ]
+        }
+
+    monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
+
+    result = mail_analysis.analyze_company_mail("Acme", "First Call", MESSAGES)
+
+    assert result["candidates"] == [{"new_status": "Interview", "reason": "Now scheduled for a technical interview."}]
+
+
+def test_analyze_company_mail_deduplicates_a_repeated_stage(monkeypatch):
+    def fake_chat_json(system, user, model=ollama_client.DEFAULT_MODEL):
+        return {
+            "stages": [
+                {"status": "Interview", "reason": "First mention."},
+                {"status": "Interview", "reason": "Repeated mention."},
+            ]
+        }
+
+    monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
+
+    result = mail_analysis.analyze_company_mail("Acme", "Applied", MESSAGES)
+
+    assert result["candidates"] == [{"new_status": "Interview", "reason": "First mention."}]

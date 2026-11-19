@@ -1,7 +1,7 @@
 from cryptography.fernet import Fernet
 from streamlit.testing.v1 import AppTest
 
-from src import gmail_client, job_extract, mail_analysis, ollama_client, storage
+from src import fit_analysis, gmail_client, job_extract, mail_analysis, ollama_client, storage
 
 
 def _render_mail():
@@ -212,7 +212,7 @@ def test_auto_scans_on_first_render_without_a_button_click(monkeypatch):
     monkeypatch.setattr(gmail_client, "get_connected_email", lambda service=None: "me@gmail.com")
 
     def fake_search(query, service=None, max_results=5):
-        if query == '"Acme"':
+        if query.startswith('subject:"Acme"'):
             return [
                 {
                     "id": "1",
@@ -237,6 +237,72 @@ def test_auto_scans_on_first_render_without_a_button_click(monkeypatch):
     assert any("No matching emails found." in c.value for c in at.caption)
     # A sync timestamp was recorded after the auto-scan.
     assert any("Last synced" in c.value for c in at.caption)
+
+
+def test_applied_company_with_a_domain_shaped_name_matches_mail_naming_it_plainly(monkeypatch):
+    """Regression guard, end to end through render(): a company saved as
+    its own domain (e.g. "Koda.security") isn't necessarily spelled that
+    way in real mail about it - observed live, Koda's own calendar-invite
+    pair (an "update" and the original "invite", Google Calendar's usual
+    shape for a rescheduled event) names it in the subject as plain "Koda",
+    never "Koda.security". build_company_query's dot-fallback (see
+    test_gmail_client.py) has to actually reach this far: the per-company
+    scan must surface both emails, not just the query string containing the
+    right pieces. Contact details are genericized; the Hebrew subject shape
+    (Google Calendar's own invite/update wording) is kept as observed,
+    since that irregular shape - not just the sender's name - is what
+    originally made this matter."""
+    _connect()
+    from src import mail_view
+
+    monkeypatch.setattr(mail_view, "_authorize_button", _fake_authorize_button(None))
+    storage.save_applied([{"company": "Koda.security", "title": "Backend", "status": "Applied"}])
+    monkeypatch.setattr(gmail_client, "get_service", lambda: "fake-service")
+    monkeypatch.setattr(gmail_client, "get_connected_email", lambda service=None: "me@gmail.com")
+
+    def fake_search(query, service=None, max_results=5):
+        # The real emails' subjects only ever say "Koda", never
+        # "Koda.security" - this only matches because of the dot-fallback
+        # term, the same way Gmail would match subject:"Koda" against them.
+        if 'subject:"Koda"' in query:
+            return [
+                {
+                    "id": "1",
+                    "thread_id": "t1",
+                    "subject": (
+                        "עדכון הזמנה משולח לא מוכר: Koda- Screening Interview, "
+                        "יום א׳ 22 בנוב׳ 2026, 9:30 AM - 10 AM (GMT+2) (someone@example.com)"
+                    ),
+                    "sender": "HR <hr@koda.security>",
+                    "date": "Wed, 18 Nov 2026 08:49:57 +0000",
+                    "snippet": "האירוע עודכן.",
+                    "looks_like_rejection": False,
+                },
+                {
+                    "id": "2",
+                    "thread_id": "t1",
+                    "subject": (
+                        "הזמנה משולח לא מוכר: Koda- Screening Interview, "
+                        "יום א׳ 22 בנוב׳ 2026, 9:30 AM - 10 AM (GMT+2) (someone@example.com)"
+                    ),
+                    "sender": "HR <hr@koda.security>",
+                    "date": "Wed, 18 Nov 2026 08:49:04 +0000",
+                    "snippet": "האירוע הזה עדיין לא נמצא ביומן שלך.",
+                    "looks_like_rejection": False,
+                },
+            ]
+        return []
+
+    monkeypatch.setattr(gmail_client, "search_messages", fake_search)
+
+    at = AppTest.from_function(_render_mail).run()
+
+    assert not at.exception
+    assert any("עדכון הזמנה משולח לא מוכר: Koda- Screening Interview" in m.value for m in at.markdown)
+    assert any(
+        m.value.startswith("**הזמנה משולח לא מוכר: Koda- Screening Interview") for m in at.markdown
+    )
+    assert not any("No matching emails found." in c.value for c in at.caption)
 
 
 def test_scan_shows_auth_warning_when_token_invalid(monkeypatch):
@@ -270,7 +336,7 @@ def test_rescan_applications_button_triggers_another_scan(monkeypatch):
     call_count = {"acme": 0}
 
     def fake_search(query, service=None, max_results=5):
-        if query == '"Acme"':
+        if query.startswith('subject:"Acme"'):
             call_count["acme"] += 1
         return []
 
@@ -307,6 +373,16 @@ def test_new_opportunities_section_auto_scans_and_shows_alert_banner(monkeypatch
         ]
 
     monkeypatch.setattr(gmail_client, "search_messages", fake_search)
+    # The same fake_search also feeds the untracked-applications auto-scan
+    # (it ignores the query), so extract_fields must be mocked here too -
+    # otherwise that scan hits the real Ollama client and hangs.
+    monkeypatch.setattr(
+        job_extract,
+        "extract_fields",
+        lambda description, model=job_extract.DEFAULT_MODEL: {
+            "company": "", "title": "", "location": "", "salary": ""
+        },
+    )
 
     at = AppTest.from_function(_render_mail).run()
 
@@ -518,7 +594,7 @@ def _connect_with_acme_email(monkeypatch) -> None:
     monkeypatch.setattr(gmail_client, "get_connected_email", lambda service=None: "me@gmail.com")
 
     def fake_search(query, service=None, max_results=5):
-        if query == '"Acme"':
+        if query.startswith('subject:"Acme"'):
             return [
                 {
                     "subject": "Update on your application",
@@ -593,6 +669,67 @@ def test_dismissing_a_suggestion_leaves_status_unchanged(monkeypatch):
     assert not any(b.key == "approve_status_Acme_panel" for b in at.button)
 
 
+def test_analyze_shows_a_button_per_candidate_when_ai_finds_multiple_stages(monkeypatch):
+    """mail_analysis can return more than one candidate stage when
+    different emails show different stages - the panel must offer one
+    button per candidate instead of forcing a single pick."""
+    _connect_with_acme_email(monkeypatch)
+
+    def fake_analyze(company, current_status, messages, model=ollama_client.DEFAULT_MODEL):
+        return {
+            "action": "update_status",
+            "new_status": "Interview",
+            "reason": "Newer email schedules an interview.",
+            "candidates": [
+                {"new_status": "Interview", "reason": "Newer email schedules an interview."},
+                {"new_status": "First Call", "reason": "Older email scheduled a screening call."},
+            ],
+        }
+
+    monkeypatch.setattr(mail_analysis, "analyze_company_mail", fake_analyze)
+
+    at = AppTest.from_function(_render_mail).run()
+    at.expander[0].expanded = True
+    at = at.button(key="analyze_mail_Acme").click().run()
+
+    assert not at.exception
+    assert any("2 possible stages" in i.value for i in at.info)
+    assert any(b.key == "approve_status_Acme_panel_Interview" for b in at.button)
+    assert any(b.key == "approve_status_Acme_panel_First Call" for b in at.button)
+    assert any(b.key == "dismiss_status_Acme_panel" for b in at.button)
+    # No single generic "Approve" button when there's more than one candidate.
+    assert not any(b.key == "approve_status_Acme_panel" for b in at.button)
+
+
+def test_approving_one_of_several_candidates_updates_the_applied_record(monkeypatch):
+    _connect_with_acme_email(monkeypatch)
+
+    def fake_analyze(company, current_status, messages, model=ollama_client.DEFAULT_MODEL):
+        return {
+            "action": "update_status",
+            "new_status": "Interview",
+            "reason": "Newer email schedules an interview.",
+            "candidates": [
+                {"new_status": "Interview", "reason": "Newer email schedules an interview."},
+                {"new_status": "First Call", "reason": "Older email scheduled a screening call."},
+            ],
+        }
+
+    monkeypatch.setattr(mail_analysis, "analyze_company_mail", fake_analyze)
+
+    at = AppTest.from_function(_render_mail).run()
+    at.expander[0].expanded = True
+    at = at.button(key="analyze_mail_Acme").click().run()
+    # Picking the *other* candidate (not new_status/candidates[0]) confirms
+    # each button applies its own stage, not just the top suggestion.
+    at = at.button(key="approve_status_Acme_panel_First Call").click().run()
+
+    assert not at.exception
+    applied = storage.load_applied()
+    assert applied[0]["status"] == "First Call"
+    assert not any(b.key == "approve_status_Acme_panel_Interview" for b in at.button)
+
+
 def test_analyze_shows_caption_when_ai_finds_no_change(monkeypatch):
     _connect_with_acme_email(monkeypatch)
 
@@ -652,7 +789,7 @@ def test_analyze_warns_when_company_has_no_single_matching_record(monkeypatch):
                     "looks_like_rejection": False,
                 }
             ]
-            if query == '"Acme"'
+            if query.startswith('subject:"Acme"')
             else []
         ),
     )
@@ -712,7 +849,7 @@ def test_approving_a_status_change_off_rejected_clears_rejected_from_stage(monke
                     "looks_like_rejection": False,
                 }
             ]
-            if query == '"Acme"'
+            if query.startswith('subject:"Acme"')
             else []
         ),
     )
@@ -853,6 +990,7 @@ def test_adding_opportunity_fetches_link_from_message_body(monkeypatch):
     monkeypatch.setattr(
         gmail_client, "get_message_link", lambda msg_id, service=None, company="", title="": "https://acme.example/jobs/42"
     )
+    monkeypatch.setattr(fit_analysis, "fetch_posting_text", lambda link, timeout=10: "")
 
     at = AppTest.from_function(_render_mail).run()
     at = at.button(key="add_opportunity_opp-1").click().run()
@@ -860,6 +998,98 @@ def test_adding_opportunity_fetches_link_from_message_body(monkeypatch):
     assert not at.exception
     saved = storage.load_saved()
     assert saved[0]["link"] == "https://acme.example/jobs/42"
+
+
+def test_adding_opportunity_fetches_description_from_posting_link(monkeypatch):
+    _connect_with_one_opportunity(monkeypatch)
+
+    monkeypatch.setattr(
+        job_extract,
+        "extract_opportunity_fields",
+        lambda subject, snippet, model=job_extract.DEFAULT_MODEL: {
+            "company": "Acme", "title": "Backend Engineer", "location": "Remote", "salary": ""
+        },
+    )
+    monkeypatch.setattr(
+        gmail_client, "get_message_link", lambda msg_id, service=None, company="", title="": "https://acme.example/jobs/42"
+    )
+    monkeypatch.setattr(fit_analysis, "fetch_posting_text", lambda link, timeout=10: "Full posting text from the link.")
+    monkeypatch.setattr(
+        job_extract,
+        "extract_fields",
+        lambda description, model=job_extract.DEFAULT_MODEL: {
+            "company": "Acme", "title": "Backend Engineer", "location": "Remote", "salary": "150k"
+        },
+    )
+
+    at = AppTest.from_function(_render_mail).run()
+    at = at.button(key="add_opportunity_opp-1").click().run()
+
+    assert not at.exception
+    saved = storage.load_saved()
+    assert saved[0]["description"] == "Full posting text from the link."
+    assert saved[0]["salary"] == "150k"
+
+
+def test_adding_opportunity_prefers_posting_company_over_misleading_snippet_guess(monkeypatch):
+    _connect_with_one_opportunity(monkeypatch)
+
+    # The subject+snippet guess got the wrong company - the classic digest
+    # cross-contamination bug extract_opportunity_fields's docstring warns
+    # about. The single job's own posting page doesn't have that problem,
+    # so its extraction should win.
+    monkeypatch.setattr(
+        job_extract,
+        "extract_opportunity_fields",
+        lambda subject, snippet, model=job_extract.DEFAULT_MODEL: {
+            "company": "WrongCo", "title": "Backend Engineer", "location": "Remote", "salary": ""
+        },
+    )
+    monkeypatch.setattr(
+        gmail_client, "get_message_link", lambda msg_id, service=None, company="", title="": "https://acme.example/jobs/42"
+    )
+    monkeypatch.setattr(fit_analysis, "fetch_posting_text", lambda link, timeout=10: "Full posting text from the link.")
+    monkeypatch.setattr(
+        job_extract,
+        "extract_fields",
+        lambda description, model=job_extract.DEFAULT_MODEL: {
+            "company": "Acme", "title": "Backend Engineer", "location": "Remote", "salary": ""
+        },
+    )
+
+    at = AppTest.from_function(_render_mail).run()
+    at = at.button(key="add_opportunity_opp-1").click().run()
+
+    assert not at.exception
+    saved = storage.load_saved()
+    assert saved[0]["company"] == "Acme"
+
+
+def test_adding_opportunity_leaves_description_blank_when_fetch_fails(monkeypatch):
+    _connect_with_one_opportunity(monkeypatch)
+
+    monkeypatch.setattr(
+        job_extract,
+        "extract_opportunity_fields",
+        lambda subject, snippet, model=job_extract.DEFAULT_MODEL: {
+            "company": "Acme", "title": "Backend Engineer", "location": "Remote", "salary": ""
+        },
+    )
+    monkeypatch.setattr(
+        gmail_client, "get_message_link", lambda msg_id, service=None, company="", title="": "https://acme.example/jobs/42"
+    )
+
+    def raising_fetch(link, timeout=10):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(fit_analysis, "fetch_posting_text", raising_fetch)
+
+    at = AppTest.from_function(_render_mail).run()
+    at = at.button(key="add_opportunity_opp-1").click().run()
+
+    assert not at.exception
+    saved = storage.load_saved()
+    assert saved[0]["description"] == ""
 
 
 def test_adding_opportunity_falls_back_to_blank_link_when_lookup_fails(monkeypatch):
@@ -931,7 +1161,7 @@ def _connect_with_two_companies(monkeypatch) -> None:
     monkeypatch.setattr(gmail_client, "get_connected_email", lambda service=None: "me@gmail.com")
 
     def fake_search(query, service=None, max_results=5):
-        if query in ('"Acme"', '"Globex"'):
+        if query.startswith('subject:"Acme"') or query.startswith('subject:"Globex"'):
             return [
                 {
                     "subject": "Update on your application",
@@ -1003,10 +1233,11 @@ def test_approving_from_the_summary_updates_storage_and_clears_the_summary(monke
     assert not any("Needs Update" in s.value for s in at.subheader)
 
 
-def test_analyze_all_includes_companies_already_in_a_terminal_status(monkeypatch):
-    """"Analyze all" re-checks every applied company with matched emails,
-    including ones already marked Offer/Rejected/Withdrawn - an application
-    can still get follow-up mail worth surfacing after it's "resolved"."""
+def test_analyze_all_skips_companies_already_at_a_final_outcome(monkeypatch):
+    """"Analyze all" skips a company already at Offer/Rejected/Withdrawn -
+    there's no stage left for mail to move it to, so re-running the model
+    on it would just burn an Ollama call for nothing. The per-company
+    "Analyze with AI" button is unaffected, for a manual recheck."""
     _connect()
     from src import mail_view
 
@@ -1032,7 +1263,7 @@ def test_analyze_all_includes_companies_already_in_a_terminal_status(monkeypatch
                     "looks_like_rejection": False,
                 }
             ]
-            if query in ('"Acme"', '"Globex"')
+            if query.startswith('subject:"Acme"') or query.startswith('subject:"Globex"')
             else []
         ),
     )
@@ -1049,7 +1280,39 @@ def test_analyze_all_includes_companies_already_in_a_terminal_status(monkeypatch
     at = at.button(key="analyze_all_mail_btn").click().run()
 
     assert not at.exception
-    assert sorted(analyzed) == ["Acme", "Globex"]
+    assert analyzed == ["Acme"]
+
+
+def test_analyze_all_button_hidden_when_every_company_is_at_a_final_outcome(monkeypatch):
+    _connect()
+    from src import mail_view
+
+    monkeypatch.setattr(mail_view, "_authorize_button", _fake_authorize_button(None))
+    storage.save_applied([{"company": "Globex", "title": "Frontend", "status": "Rejected"}])
+    monkeypatch.setattr(gmail_client, "get_service", lambda: "fake-service")
+    monkeypatch.setattr(gmail_client, "get_connected_email", lambda service=None: "me@gmail.com")
+    monkeypatch.setattr(
+        gmail_client,
+        "search_messages",
+        lambda query, service=None, max_results=5: (
+            [
+                {
+                    "subject": "Update",
+                    "sender": "hr@example.com",
+                    "date": "Mon, 1 Jan 2026",
+                    "snippet": "Some update.",
+                    "looks_like_rejection": False,
+                }
+            ]
+            if query.startswith('subject:"Globex"')
+            else []
+        ),
+    )
+
+    at = AppTest.from_function(_render_mail).run()
+
+    assert not at.exception
+    assert not any(b.key == "analyze_all_mail_btn" for b in at.button)
 
 
 def _connect_with_two_opportunities(monkeypatch) -> None:
@@ -1085,6 +1348,16 @@ def _connect_with_two_opportunities(monkeypatch) -> None:
                 "looks_like_rejection": False,
             },
         ],
+    )
+    # The same fake search_messages also feeds the untracked-applications
+    # auto-scan (it ignores the query), so extract_fields must be mocked
+    # here too - otherwise that scan hits the real Ollama client and hangs.
+    monkeypatch.setattr(
+        job_extract,
+        "extract_fields",
+        lambda description, model=job_extract.DEFAULT_MODEL: {
+            "company": "", "title": "", "location": "", "salary": ""
+        },
     )
 
 
@@ -1361,6 +1634,7 @@ def test_adding_untracked_application_fetches_link_from_message_body(monkeypatch
     monkeypatch.setattr(
         gmail_client, "get_message_link", lambda msg_id, service=None, company="", title="": "https://acme.example/jobs/42"
     )
+    monkeypatch.setattr(fit_analysis, "fetch_posting_text", lambda link, timeout=10: "")
 
     at = AppTest.from_function(_render_mail).run()
     at = at.button(key="scan_unlisted_btn").click().run()
@@ -1369,6 +1643,49 @@ def test_adding_untracked_application_fetches_link_from_message_body(monkeypatch
     assert not at.exception
     applied = storage.load_applied()
     assert applied[0]["link"] == "https://acme.example/jobs/42"
+
+
+def test_adding_untracked_application_fetches_description_from_posting_link(monkeypatch):
+    _connect_for_unlisted_scan(monkeypatch)
+
+    monkeypatch.setattr(
+        gmail_client,
+        "search_messages",
+        lambda query, service=None, max_results=5: (
+            [
+                {
+                    "id": "app-1",
+                    "thread_id": "t1",
+                    "subject": "Thank you for applying to Acme",
+                    "sender": "careers@acme.example",
+                    "date": "Mon, 1 Jan 2026",
+                    "snippet": "We received your application.",
+                    "looks_like_rejection": False,
+                }
+            ]
+            if "thank you for applying" in query
+            else []
+        ),
+    )
+    monkeypatch.setattr(
+        job_extract,
+        "extract_fields",
+        lambda description, model=job_extract.DEFAULT_MODEL: {
+            "company": "Acme", "title": "Backend Engineer", "location": "Remote", "salary": ""
+        },
+    )
+    monkeypatch.setattr(
+        gmail_client, "get_message_link", lambda msg_id, service=None, company="", title="": "https://acme.example/jobs/42"
+    )
+    monkeypatch.setattr(fit_analysis, "fetch_posting_text", lambda link, timeout=10: "Full posting text from the link.")
+
+    at = AppTest.from_function(_render_mail).run()
+    at = at.button(key="scan_unlisted_btn").click().run()
+    at = at.button(key="add_unlisted_app-1").click().run()
+
+    assert not at.exception
+    applied = storage.load_applied()
+    assert applied[0]["description"] == "Full posting text from the link."
 
 
 def test_dismissing_untracked_application_hides_buttons_without_saving(monkeypatch):
@@ -1557,7 +1874,10 @@ def test_opportunities_scan_excludes_already_tracked_companies(monkeypatch):
 
     at = AppTest.from_function(_render_mail).run()
 
-    opportunities_query = next(q for q in captured_queries if "LinkedIn Job Alerts" in q)
+    # build_company_query now also excludes the same digest senders, so
+    # match on the opportunities query's distinct "newer_than:14d" default
+    # instead of just "LinkedIn Job Alerts" (both queries contain that now).
+    opportunities_query = next(q for q in captured_queries if "newer_than:14d" in q)
     assert '-subject:"Acme"' in opportunities_query
     assert '-subject:"Initech"' in opportunities_query
 

@@ -121,7 +121,7 @@ def render() -> None:
                 st.success(f"Analyzed {len(targets) - len(errors)} of {len(targets)} position(s).")
                 st.rerun()
     with col_paste:
-        with st.popover("Paste job description to create a saved position"):
+        with st.popover("Add a saved position from a link"):
             # Keys are versioned (like resume_view's supporting-document
             # uploader) so a successful create can clear the fields by
             # advancing to a fresh, empty widget instead of reusing one
@@ -130,36 +130,51 @@ def render() -> None:
             paste_version = st.session_state.get("paste_popover_version", 0)
             link = st.text_input("Job link :red[*]", key=f"paste_description_link_{paste_version}")
             pasted = st.text_area(
-                "Job description :red[*]", height=200, key=f"paste_description_text_{paste_version}"
+                "Job description (optional - leave blank to fetch it from the link automatically)",
+                height=200,
+                key=f"paste_description_text_{paste_version}",
             )
             if st.button(f"Create (Ollama {job_extract.DEFAULT_MODEL})", key="create_from_paste_btn"):
                 if not link.strip():
                     st.error("Add the job link first.")
-                elif not pasted.strip():
-                    st.error("Paste a job description first.")
                 else:
-                    try:
-                        with st.spinner(f"Extracting fields with Ollama {job_extract.DEFAULT_MODEL}..."):
-                            fields = job_extract.extract_fields(pasted)
-                    except ollama_client.OllamaError as exc:
-                        st.error(str(exc))
+                    # A pasted description always wins - some sites (LinkedIn,
+                    # Workday job boards, ...) block a plain scripted GET
+                    # request and fetch_posting_text comes back empty, so
+                    # pasting it by hand is the fallback for exactly those.
+                    description = pasted.strip()
+                    if not description:
+                        with st.spinner("Fetching the job posting..."):
+                            description = fit_analysis.fetch_posting_text(link.strip())
+                    if not description:
+                        st.error(
+                            "Couldn't fetch that page automatically - some sites (LinkedIn, Workday "
+                            "job boards, ...) block a plain request. Paste the job description above "
+                            "instead."
+                        )
                     else:
-                        records = storage.load_saved()
-                        records.append({
-                            "company": fields["company"],
-                            "title": fields["title"],
-                            "link": link.strip(),
-                            "location": fields["location"],
-                            "salary": fields["salary"],
-                            "posting_status": storage.POSTING_STATUS_OPEN,
-                            "date_saved": date.today().isoformat(),
-                            "notes": "",
-                            "description": pasted,
-                        })
-                        storage.save_saved(records)
-                        st.session_state["paste_popover_version"] = paste_version + 1
-                        st.success(f"Added {fields['company'] or 'position'} to Saved Positions.")
-                        st.rerun()
+                        try:
+                            with st.spinner(f"Extracting fields with Ollama {job_extract.DEFAULT_MODEL}..."):
+                                fields = job_extract.extract_fields(description)
+                        except ollama_client.OllamaError as exc:
+                            st.error(str(exc))
+                        else:
+                            records = storage.load_saved()
+                            records.append({
+                                "company": fields["company"],
+                                "title": fields["title"],
+                                "link": link.strip(),
+                                "location": fields["location"],
+                                "salary": fields["salary"],
+                                "posting_status": storage.POSTING_STATUS_OPEN,
+                                "date_saved": date.today().isoformat(),
+                                "notes": "",
+                                "description": description,
+                            })
+                            storage.save_saved(records)
+                            st.session_state["paste_popover_version"] = paste_version + 1
+                            st.success(f"Added {fields['company'] or 'position'} to Saved Positions.")
+                            st.rerun()
 
     st.divider()
     st.subheader("Close a posting")
