@@ -114,3 +114,154 @@ def test_move_to_applied_positions_transfers_record():
     assert applied[0]["company"] == "Acme"
     assert applied[0]["status"] == "Applied"
     assert "date_applied" in applied[0]
+
+
+def test_calculate_fit_requires_a_resume():
+    storage.save_saved([{"company": "Acme", "title": "Backend", "link": "", "date_saved": "2026-01-01"}])
+
+    at = AppTest.from_function(_render_saved).run()
+    at.button(key="calc_fit_saved_btn").click().run()
+
+    assert not at.exception
+    assert any("Add a resume" in e.value for e in at.error)
+    assert storage.load_saved()[0].get("fit_score") in (None, "")
+
+
+def test_calculate_fit_scores_every_saved_position_one_by_one(monkeypatch):
+    from src import fit_analysis
+
+    storage.save_resume("My resume")
+    storage.save_saved(
+        [
+            {"company": "Acme", "title": "Backend", "link": "", "date_saved": "2026-01-01"},
+            {"company": "Globex", "title": "Frontend", "link": "", "date_saved": "2026-01-02"},
+        ]
+    )
+
+    scored = []
+
+    def fake_analyze(resume_text, job, model=None):
+        scored.append(job["company"])
+        return {"fit_score": 8, "fit_notes": "Strong match."}
+
+    monkeypatch.setattr(fit_analysis, "analyze", fake_analyze)
+
+    at = AppTest.from_function(_render_saved).run()
+    at = at.button(key="calc_fit_saved_btn").click().run()
+
+    assert not at.exception
+    # Looped one position at a time (not a single batched call).
+    assert scored == ["Acme", "Globex"]
+    saved = storage.load_saved()
+    assert all(r["fit_score"] == 8 and r["fit_notes"] == "Strong match." for r in saved)
+
+
+def test_calculate_fit_surfaces_ollama_error_without_blocking_the_rest(monkeypatch):
+    from src import fit_analysis, ollama_client
+
+    storage.save_resume("My resume")
+    storage.save_saved(
+        [
+            {"company": "Acme", "title": "Backend", "link": "", "date_saved": "2026-01-01"},
+            {"company": "Globex", "title": "Frontend", "link": "", "date_saved": "2026-01-02"},
+        ]
+    )
+
+    def flaky_analyze(resume_text, job, model=None):
+        if job["company"] == "Acme":
+            raise ollama_client.OllamaError("Could not reach Ollama")
+        return {"fit_score": 8, "fit_notes": "Strong match."}
+
+    monkeypatch.setattr(fit_analysis, "analyze", flaky_analyze)
+
+    at = AppTest.from_function(_render_saved).run()
+    at = at.button(key="calc_fit_saved_btn").click().run()
+
+    assert not at.exception
+    saved = storage.load_saved()
+    acme = next(r for r in saved if r["company"] == "Acme")
+    globex = next(r for r in saved if r["company"] == "Globex")
+    assert acme.get("fit_score") in (None, "")
+    assert globex["fit_score"] == 8
+
+
+def test_calculate_fit_shows_info_when_no_saved_positions():
+    at = AppTest.from_function(_render_saved).run()
+    at.button(key="calc_fit_saved_btn").click().run()
+
+    assert not at.exception
+    assert any("Add a saved position" in i.value for i in at.info)
+
+
+def test_calculate_fit_skips_positions_that_already_have_a_score(monkeypatch):
+    from src import fit_analysis
+
+    storage.save_resume("My resume")
+    storage.save_saved(
+        [
+            {"company": "Acme", "title": "Backend", "link": "", "date_saved": "2026-01-01", "fit_score": 5, "fit_notes": "Old."},
+            {"company": "Globex", "title": "Frontend", "link": "", "date_saved": "2026-01-02"},
+        ]
+    )
+
+    scored = []
+
+    def fake_analyze(resume_text, job, model=None):
+        scored.append(job["company"])
+        return {"fit_score": 9, "fit_notes": "New."}
+
+    monkeypatch.setattr(fit_analysis, "analyze", fake_analyze)
+
+    at = AppTest.from_function(_render_saved).run()
+    at = at.button(key="calc_fit_saved_btn").click().run()
+
+    assert not at.exception
+    assert scored == ["Globex"]
+    saved = storage.load_saved()
+    acme = next(r for r in saved if r["company"] == "Acme")
+    globex = next(r for r in saved if r["company"] == "Globex")
+    assert acme["fit_score"] == 5 and acme["fit_notes"] == "Old."
+    assert globex["fit_score"] == 9
+
+
+def test_calculate_fit_persists_each_position_before_scoring_the_next(monkeypatch):
+    from src import fit_analysis
+
+    storage.save_resume("My resume")
+    storage.save_saved(
+        [
+            {"company": "Acme", "title": "Backend", "link": "", "date_saved": "2026-01-01"},
+            {"company": "Globex", "title": "Frontend", "link": "", "date_saved": "2026-01-02"},
+        ]
+    )
+
+    seen_acme_score_before_globex = []
+
+    def fake_analyze(resume_text, job, model=None):
+        if job["company"] == "Globex":
+            on_disk = next((r for r in storage.load_saved() if r["company"] == "Acme"), None)
+            seen_acme_score_before_globex.append(on_disk.get("fit_score") if on_disk else None)
+        return {"fit_score": 7, "fit_notes": "ok"}
+
+    monkeypatch.setattr(fit_analysis, "analyze", fake_analyze)
+
+    at = AppTest.from_function(_render_saved).run()
+    at = at.button(key="calc_fit_saved_btn").click().run()
+
+    assert not at.exception
+    # Acme's score was already written to storage by the time Globex was
+    # analyzed - each position is saved separately, not all at the end.
+    assert seen_acme_score_before_globex == [7]
+
+
+def test_calculate_fit_shows_info_when_everything_already_scored(monkeypatch):
+    storage.save_resume("My resume")
+    storage.save_saved(
+        [{"company": "Acme", "title": "Backend", "link": "", "date_saved": "2026-01-01", "fit_score": 5}]
+    )
+
+    at = AppTest.from_function(_render_saved).run()
+    at = at.button(key="calc_fit_saved_btn").click().run()
+
+    assert not at.exception
+    assert any("already has a fit score" in i.value for i in at.info)

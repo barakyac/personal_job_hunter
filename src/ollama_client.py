@@ -34,6 +34,13 @@ def chat_json(system: str, user: str, model: str = DEFAULT_MODEL, timeout: int =
             # 5-minute idle unload, which forces a slow reload (~9GB) on
             # every call after a gap.
             "keep_alive": "30m",
+            # Qwen3.5 is a "thinking" model by default - it emits a whole
+            # internal reasoning pass (a separate "thinking" field) before
+            # the actual answer, which this app never reads anyway (only
+            # "content" below) and which was the actual cause of 300s+
+            # timeouts on larger prompts like fit scoring. Turning it off
+            # dropped a trivial call from ~9s to ~0.2s locally.
+            "think": False,
         },
         timeout,
     )
@@ -53,6 +60,7 @@ def chat(messages: list[dict], model: str = DEFAULT_MODEL, timeout: int = 300) -
             "messages": messages,
             "stream": False,
             "keep_alive": "30m",
+            "think": False,
         },
         timeout,
     )

@@ -51,6 +51,7 @@ def test_chat_json_sends_expected_payload(monkeypatch):
     assert captured["json"]["format"] == "json"
     assert captured["json"]["stream"] is False
     assert captured["json"]["keep_alive"] == "30m"
+    assert captured["json"]["think"] is False
 
 
 def test_chat_json_defaults_to_default_model(monkeypatch):
@@ -130,6 +131,7 @@ def test_chat_sends_messages_as_is_without_forcing_json_format(monkeypatch):
     assert "format" not in captured["json"]
     assert captured["json"]["stream"] is False
     assert captured["json"]["keep_alive"] == "30m"
+    assert captured["json"]["think"] is False
 
 
 def test_chat_raises_ollama_error_when_unreachable(monkeypatch):

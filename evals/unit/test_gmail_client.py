@@ -29,6 +29,26 @@ def test_build_new_opportunities_query():
     assert 'from:("Glassdoor Jobs")' in query
 
 
+def test_build_new_opportunities_query_excludes_known_companies():
+    query = gmail_client.build_new_opportunities_query(["Jeen.ai", "Koda.security"])
+    assert '-subject:"Jeen.ai"' in query
+    assert '-subject:"Koda.security"' in query
+
+
+def test_build_unlisted_applications_query_excludes_known_companies():
+    query = gmail_client.build_unlisted_applications_query(["Acme", "Globex"], newer_than_days=30)
+    assert "newer_than:30d" in query
+    assert '"thank you for applying"' in query
+    assert '-subject:"Acme"' in query
+    assert '-subject:"Globex"' in query
+
+
+def test_build_unlisted_applications_query_skips_blank_company_names():
+    query = gmail_client.build_unlisted_applications_query(["", "  ", "Acme"])
+    assert query.count('-subject:"') == 1
+    assert '-subject:"Acme"' in query
+
+
 def test_looks_like_rejection():
     assert gmail_client.looks_like_rejection("Unfortunately, we will not be moving forward.")
     assert gmail_client.looks_like_rejection("We've decided to move forward with other candidates.")
@@ -465,6 +485,131 @@ def test_search_messages_empty_query_returns_empty_without_calling_api():
     assert gmail_client.search_messages("", service=object()) == []
 
 
+def _b64(text: str) -> str:
+    import base64
+
+    return base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii")
+
+
+def test_get_message_link_extracts_url_from_plain_text_body():
+    payload = {
+        "mimeType": "text/plain",
+        "body": {"data": _b64("See the posting: https://acme.example/jobs/42 - good luck!")},
+    }
+    service = _FakeService({}, {"1": {"id": "1", "payload": payload}})
+
+    assert gmail_client.get_message_link("1", service=service) == "https://acme.example/jobs/42"
+
+
+def test_get_message_link_extracts_url_from_html_part_and_skips_footer_links():
+    payload = {
+        "mimeType": "multipart/alternative",
+        "parts": [
+            {
+                "mimeType": "text/html",
+                "body": {
+                    "data": _b64(
+                        '<a href="https://acme.example/unsubscribe">Unsubscribe</a>'
+                        '<a href="https://acme.example/jobs/42">View job</a>'
+                    )
+                },
+            }
+        ],
+    }
+    service = _FakeService({}, {"1": {"id": "1", "payload": payload}})
+
+    assert gmail_client.get_message_link("1", service=service) == "https://acme.example/jobs/42"
+
+
+def test_get_message_link_returns_empty_string_when_no_link_found():
+    payload = {"mimeType": "text/plain", "body": {"data": _b64("No links here.")}}
+    service = _FakeService({}, {"1": {"id": "1", "payload": payload}})
+
+    assert gmail_client.get_message_link("1", service=service) == ""
+
+
+def test_get_message_link_disambiguates_digest_email_by_company_proximity():
+    # A LinkedIn-style digest bundling two different jobs in one email -
+    # only the job-board-shaped link closest to the requested company's
+    # mention should be returned, not just the first one in the body.
+    body = (
+        "Senior Engineer\nAcme\nView job: https://www.linkedin.com/comm/jobs/view/111/?trk=a\n\n"
+        "Backend Engineer\nGlobex\nView job: https://www.linkedin.com/comm/jobs/view/222/?trk=b\n"
+    )
+    payload = {"mimeType": "text/plain", "body": {"data": _b64(body)}}
+    service = _FakeService({}, {"1": {"id": "1", "payload": payload}})
+
+    assert gmail_client.get_message_link("1", service=service, company="Acme") == (
+        "https://www.linkedin.com/comm/jobs/view/111/?trk=a"
+    )
+    assert gmail_client.get_message_link("1", service=service, company="Globex") == (
+        "https://www.linkedin.com/comm/jobs/view/222/?trk=b"
+    )
+
+
+def test_get_message_link_skips_logo_image_and_uses_joblisting_link():
+    payload = {
+        "mimeType": "text/html",
+        "body": {
+            "data": _b64(
+                '<img src="https://media.glassdoor.com/sql/123/acme-logo.png">'
+                '<a href="https://www.glassdoor.com/partner/jobListing.htm?jobListingId=42">Acme</a>'
+            )
+        },
+    }
+    service = _FakeService({}, {"1": {"id": "1", "payload": payload}})
+
+    assert gmail_client.get_message_link("1", service=service) == (
+        "https://www.glassdoor.com/partner/jobListing.htm?jobListingId=42"
+    )
+
+
+def test_get_message_link_prefers_title_over_company_when_company_has_several_cards():
+    # The same company has two different postings in one digest - the
+    # title (unique to one card) must win over company-only proximity,
+    # which can't tell the two company-matching cards apart.
+    body = (
+        "GTM Engineer - RevAI\nAcme\nTel Aviv\nView job: https://www.linkedin.com/comm/jobs/view/111/?trk=a\n\n"
+        "Senior Platform Engineer\nAcme\nTel Aviv\nView job: https://www.linkedin.com/comm/jobs/view/222/?trk=b\n"
+    )
+    payload = {"mimeType": "text/plain", "body": {"data": _b64(body)}}
+    service = _FakeService({}, {"1": {"id": "1", "payload": payload}})
+
+    assert gmail_client.get_message_link(
+        "1", service=service, company="Acme", title="GTM Engineer - RevAI"
+    ) == "https://www.linkedin.com/comm/jobs/view/111/?trk=a"
+    assert gmail_client.get_message_link(
+        "1", service=service, company="Acme", title="Senior Platform Engineer"
+    ) == "https://www.linkedin.com/comm/jobs/view/222/?trk=b"
+
+
+def test_get_message_link_returns_empty_when_ambiguous_and_company_not_found():
+    # Two generic (non-job-board-shaped) links and a company name that
+    # doesn't appear in the body at all - no safe way to pick, so this
+    # must return "" rather than guess.
+    body = "https://acme.example/careers https://acme.example/about"
+    payload = {"mimeType": "text/plain", "body": {"data": _b64(body)}}
+    service = _FakeService({}, {"1": {"id": "1", "payload": payload}})
+
+    assert gmail_client.get_message_link("1", service=service, company="Nonexistent Co") == ""
+
+
+def test_get_message_link_wraps_api_errors():
+    class _RaisingMessages:
+        def get(self, **kwargs):
+            raise RuntimeError("boom")
+
+    class _RaisingService:
+        def users(self):
+            return self
+
+        def messages(self):
+            return _RaisingMessages()
+
+    with pytest.raises(gmail_client.GmailError):
+        gmail_client.get_message_link("1", service=_RaisingService())
+
+
 class _FakeContext:
     def __init__(self, ip_address=None, headers=None):
         self.ip_address = ip_address
@@ -574,3 +719,8 @@ def test_clear_oauth_config_does_nothing_when_never_configured():
     gmail_client.clear_oauth_config()  # should not raise
 
     assert not gmail_client.has_persisted_config()
+
+
+def test_build_unlisted_applications_query_defaults_to_the_past_month():
+    query = gmail_client.build_unlisted_applications_query(["Acme"])
+    assert "newer_than:30d" in query

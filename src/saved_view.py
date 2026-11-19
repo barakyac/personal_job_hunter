@@ -42,27 +42,40 @@ def render() -> None:
         if st.button(f"Calculate fit (Ollama {ollama_client.DEFAULT_MODEL})", key="calc_fit_saved_btn"):
             records = storage.from_dataframe(edited, date_cols=["date_saved"])
             resume_text = storage.load_resume()
+            targets = [i for i, r in enumerate(records) if r.get("fit_score") in (None, "")]
             if not resume_text.strip():
                 st.error("Add a resume on the Personal Work Info tab first.")
             elif not records:
                 st.info("Add a saved position above first.")
+            elif not targets:
+                st.info("Every saved position already has a fit score.")
             else:
                 progress = st.progress(0.0)
                 status_box = st.empty()
+                errors = []
 
-                def on_progress(n, total, job):
+                for n, i in enumerate(targets):
+                    job = records[i]
                     status_box.text(f"Analyzing {job.get('company', '?')} - {job.get('title', '')}...")
-                    progress.progress(n / total)
+                    try:
+                        result = fit_analysis.analyze(resume_text, job)
+                    except ollama_client.OllamaError as exc:
+                        errors.append(f"{job.get('company', '?')}: {exc}")
+                    else:
+                        # Each position is scored and saved on its own, one
+                        # at a time - not all held back for a single save
+                        # at the end, so progress survives an interruption
+                        # and earlier results are visible right away.
+                        records[i]["fit_score"] = result["fit_score"]
+                        records[i]["fit_notes"] = result["fit_notes"]
+                        storage.save_saved(records)
+                    progress.progress((n + 1) / len(targets))
 
-                errors = fit_analysis.analyze_many(
-                    resume_text, records, list(range(len(records))), on_progress=on_progress
-                )
-                progress.progress(1.0)
+                progress.empty()
                 status_box.empty()
-                storage.save_saved(records)
                 for error in errors:
                     st.warning(error)
-                st.success(f"Analyzed {len(records) - len(errors)} of {len(records)} position(s).")
+                st.success(f"Analyzed {len(targets) - len(errors)} of {len(targets)} position(s).")
                 st.rerun()
     with col_paste:
         with st.popover("Paste job description to create a saved position"):

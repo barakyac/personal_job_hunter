@@ -1,5 +1,7 @@
+import base64
 import json
 import os
+import re
 from pathlib import Path
 
 import requests
@@ -66,6 +68,19 @@ REJECTION_KEYWORDS = [
 # New-opportunity alert emails (job boards / recruiters), not tied to a
 # specific applied company.
 NEW_OPPORTUNITY_FROM_NAMES = ['"LinkedIn Job Alerts"', '"Glassdoor Jobs"']
+
+# Phrases that show up in an ATS's "we got your application" auto-reply,
+# regardless of which company sent it - used to find applications that
+# were never added to this app at all (as opposed to build_company_query,
+# which only ever looks at companies already tracked here).
+APPLICATION_RECEIVED_PHRASES = [
+    "thank you for applying",
+    "thanks for applying",
+    "we received your application",
+    "your application has been received",
+    "application received",
+    "application has been submitted",
+]
 
 
 class GmailError(Exception):
@@ -332,11 +347,40 @@ def build_company_query(company: str) -> str:
     return f'"{company}"' if company else ""
 
 
-def build_new_opportunities_query(newer_than_days: int = 14) -> str:
+def _exclude_known_companies(query: str, known_companies: list[str]) -> str:
+    """Append `-subject:"Company"` exclusions so a search never resurfaces
+    mail about a company already tracked (Saved or Applied) in this app.
+    Scoped to the subject, not the whole message: every alert/confirmation
+    email we've seen names the company in its subject line, and a blanket
+    full-text `-"Company"` false-excludes anything that merely mentions a
+    tracked company in passing - e.g. a real "thank you for applying" email
+    from an unrelated company whose body happens to say "a proud part of
+    Google Cloud" got silently dropped once "google" was already tracked."""
+    for company in known_companies:
+        company = company.strip()
+        if company:
+            query += f' -subject:"{company}"'
+    return query
+
+
+def build_new_opportunities_query(known_companies: list[str] | None = None, newer_than_days: int = 14) -> str:
     """Gmail search query for job-board alert emails (not tied to a
-    specific applied company) from the last `newer_than_days` days."""
+    specific applied company) from the last `newer_than_days` days -
+    excluding `known_companies` so a job you already saved or applied to
+    doesn't keep resurfacing here every time the board re-alerts on it."""
     senders = " OR ".join(f"from:({s})" for s in NEW_OPPORTUNITY_FROM_NAMES)
-    return f"({senders}) newer_than:{newer_than_days}d"
+    query = f"({senders}) newer_than:{newer_than_days}d"
+    return _exclude_known_companies(query, known_companies or [])
+
+
+def build_unlisted_applications_query(known_companies: list[str], newer_than_days: int = 30) -> str:
+    """Gmail search query for application-confirmation-style mail that
+    isn't about a company already tracked in this app - the ones this app
+    would otherwise never surface, because every other scan here only
+    looks at companies you've already added."""
+    phrases = " OR ".join(f'"{p}"' for p in APPLICATION_RECEIVED_PHRASES)
+    query = f"({phrases}) newer_than:{newer_than_days}d"
+    return _exclude_known_companies(query, known_companies)
 
 
 def _parse_message(msg: dict) -> dict:
@@ -352,6 +396,158 @@ def _parse_message(msg: dict) -> dict:
         "snippet": snippet,
         "looks_like_rejection": looks_like_rejection(f"{subject} {snippet}"),
     }
+
+
+# Domains/path fragments that show up in a job-alert email's footer or
+# tracking pixels, never in the job posting link itself - skipped when
+# picking a link out of a message body in get_message_link().
+_LINK_SKIP_PATTERNS = [
+    "unsubscribe",
+    "preferences",
+    "optout",
+    "opt-out",
+    "/legal",
+    "/psettings",
+    "/privacy",
+    "list-manage.com",
+    "mailchimp.com",
+]
+
+# Non-HTML asset extensions (logos, tracking pixels, stylesheets) that show
+# up as plain https:// links in an HTML email body but are never the job
+# posting itself.
+_ASSET_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".css", ".js", ".woff", ".woff2")
+
+# Known job-board URL shapes (host + path fragment) that point at one
+# specific job posting, as opposed to a "manage your alerts" or search link
+# that happens to live under the same host. A LinkedIn/Glassdoor digest
+# email bundles several jobs in one body, so only a link matching one of
+# these is trusted enough to disambiguate by proximity to a company name.
+_JOB_BOARD_MARKERS = [
+    "linkedin.com/comm/jobs/view/",
+    "linkedin.com/jobs/view/",
+    "glassdoor.com/partner/joblisting.htm",
+    "glassdoor.com/job-listing/",
+]
+
+_URL_RE = re.compile(r'https?://[^\s"\'<>]+')
+
+
+def _decode_body_part(part: dict) -> str:
+    data = part.get("body", {}).get("data", "")
+    if not data:
+        return ""
+    try:
+        return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4)).decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def _extract_body_text(payload: dict) -> str:
+    """Walk a message's MIME parts and concatenate every text/plain and
+    text/html part's decoded body. Only used by get_message_link() to pull
+    the job-posting URL back out - the text itself is discarded right
+    after, never stored or returned."""
+    mime_type = payload.get("mimeType", "")
+    if mime_type in ("text/plain", "text/html"):
+        return _decode_body_part(payload)
+    return "\n".join(_extract_body_text(part) for part in payload.get("parts", []) or [])
+
+
+def _is_skippable_link(url: str) -> bool:
+    lowered = url.lower()
+    if lowered.split("?", 1)[0].endswith(_ASSET_EXTENSIONS):
+        return True
+    return any(skip in lowered for skip in _LINK_SKIP_PATTERNS)
+
+
+def _candidate_links(body_text: str) -> list[tuple[int, str]]:
+    """Every URL in the body (with its character offset) that isn't an
+    asset/footer/tracking link."""
+    candidates = []
+    for match in _URL_RE.finditer(body_text):
+        url = match.group().rstrip(".,;)")
+        if not _is_skippable_link(url):
+            candidates.append((match.start(), url))
+    return candidates
+
+
+def _anchor_positions(body_lower: str, text: str) -> list[int]:
+    """Character offsets of every mention of `text` in the (already
+    lowercased) body that looks like real card content rather than markup/
+    namespace soup. Outlook-compatibility markup repeats
+    xmlns:v="urn:schemas-microsoft-com:vml" once per card in some HTML
+    templates - a false "Microsoft" hit next to every card, not just that
+    company's own - so a mention sitting right next to "schemas-"/"xmlns"
+    is excluded."""
+    text = text.strip().lower()
+    if not text:
+        return []
+    return [
+        m.start()
+        for m in re.finditer(re.escape(text), body_lower)
+        if not any(marker in body_lower[max(0, m.start() - 20): m.end() + 20] for marker in ("schemas-", "xmlns"))
+    ]
+
+
+def _best_job_link(body_text: str, company: str = "", title: str = "") -> str:
+    """Best-effort pick of the one URL in a message body that's this job's
+    posting link.
+
+    A LinkedIn/Glassdoor job-alert digest bundles several postings in one
+    email, so a link is only trusted there when it matches a known
+    job-board URL shape (_JOB_BOARD_MARKERS) - with more than one such
+    link, the one positioned closest to an anchor's mention in the body
+    wins (by character distance, over every occurrence of the anchor, not
+    just the first - a digest's hidden preheader text ("Acme is
+    hiring...") often repeats the company name far from the actual job
+    card). `title` is tried as the anchor before `company`, since a single
+    company can have several different postings in the same digest (and
+    thus several cards this company name alone can't tell apart), while
+    the exact job title is specific to one card. Outside those two boards
+    (e.g. a direct ATS application-confirmation email), there's no shape
+    to check, so a link is only used when it's the single remaining
+    candidate after skipping assets/footers - with several, and no anchor
+    that disambiguates them, there's no safe way to tell which one is
+    right, and this returns "" rather than guess."""
+    candidates = _candidate_links(body_text)
+    if not candidates:
+        return ""
+
+    board_candidates = [
+        (pos, url) for pos, url in candidates if any(marker in url.lower() for marker in _JOB_BOARD_MARKERS)
+    ]
+    if board_candidates:
+        if len(board_candidates) == 1:
+            return board_candidates[0][1]
+        body_lower = body_text.lower()
+        for anchor in (title, company):
+            positions = _anchor_positions(body_lower, anchor)
+            if positions:
+                _, url = min(
+                    (abs(link_pos - pos), url) for link_pos, url in board_candidates for pos in positions
+                )
+                return url
+        return ""
+
+    return candidates[0][1] if len(candidates) == 1 else ""
+
+
+def get_message_link(msg_id: str, service=None, company: str = "", title: str = "") -> str:
+    """Fetch one message's full body - the only call in this module that
+    does - purely to pull out its job-posting URL (see _best_job_link for
+    how). The decoded body text is discarded immediately after and never
+    stored or surfaced; only the extracted link is returned (or "" if none
+    is found/safe to guess). Call this only for a message the user has
+    chosen to add as a Saved/Applied position, never during search/
+    listing, which stays metadata+snippet only. `company`/`title`, when
+    given, disambiguate a multi-job digest email."""
+    service = service or get_service()
+    try:
+        msg = service.users().messages().get(userId="me", id=msg_id, format="full").execute()
+    except Exception as exc:
+        raise GmailError(f"Could not read message {msg_id}: {exc}") from exc
+    return _best_job_link(_extract_body_text(msg.get("payload", {})), company, title)
 
 
 def search_messages(query: str, service=None, max_results: int = 5) -> list[dict]:
