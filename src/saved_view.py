@@ -5,15 +5,26 @@ import streamlit as st
 from src import fit_analysis, job_extract, ollama_client, storage
 
 
+def _fit_score_sort_key(record: dict) -> float:
+    try:
+        return -float(record.get("fit_score"))
+    except (TypeError, ValueError):
+        return float("inf")  # not yet scored - sorts after every scored position
+
+
 def render() -> None:
     st.header("Saved Positions")
     st.caption("Roles you're considering but haven't applied to yet.")
 
     saved = storage.load_saved()
-    # Closed postings sort to the end by default - everything still open
-    # (what the user actually needs to act on) stays up top, in its
-    # original relative order (Python's sort is stable).
-    saved = sorted(saved, key=lambda r: r.get("posting_status") == storage.POSTING_STATUS_CLOSED)
+    # Closed postings always sort to the end; within each group, highest fit
+    # score first (not-yet-scored positions sort last within their group).
+    # Always on, not a toggle - the best open matches should be the first
+    # thing you see. Ties keep their original relative order (stable sort).
+    saved = sorted(
+        saved,
+        key=lambda r: (r.get("posting_status") == storage.POSTING_STATUS_CLOSED, _fit_score_sort_key(r)),
+    )
 
     closed_count = sum(1 for r in saved if r.get("posting_status") == storage.POSTING_STATUS_CLOSED)
     hide_closed = False
@@ -70,13 +81,17 @@ def render() -> None:
         if st.button(f"Calculate fit (Ollama {ollama_client.DEFAULT_MODEL})", key="calc_fit_saved_btn"):
             records = records_from_editor(edited)
             resume_text = storage.load_resume()
-            targets = [i for i, r in enumerate(records) if r.get("fit_score") in (None, "")]
+            targets = [
+                i for i, r in enumerate(records)
+                if r.get("fit_score") in (None, "")
+                and r.get("posting_status", storage.POSTING_STATUS_OPEN) != storage.POSTING_STATUS_CLOSED
+            ]
             if not resume_text.strip():
                 st.error("Add a resume on the Personal Work Info tab first.")
             elif not records:
                 st.info("Add a saved position above first.")
             elif not targets:
-                st.info("Every saved position already has a fit score.")
+                st.info("Every open saved position already has a fit score.")
             else:
                 progress = st.progress(0.0)
                 status_box = st.empty()

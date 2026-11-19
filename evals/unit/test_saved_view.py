@@ -198,6 +198,36 @@ def test_closed_postings_sort_to_the_end_by_default():
     assert [r["company"] for r in storage.load_saved()] == ["Open Co", "Closed Co"]
 
 
+def test_sorts_by_fit_score_descending_with_unscored_last():
+    storage.save_saved([
+        {"company": "Low", "title": "A", "link": "", "date_saved": "2026-01-01", "fit_score": 3},
+        {"company": "Unscored", "title": "B", "link": "", "date_saved": "2026-01-01"},
+        {"company": "High", "title": "C", "link": "", "date_saved": "2026-01-01", "fit_score": 9},
+    ])
+
+    at = AppTest.from_function(_render_saved).run()
+    at.button(key="save_saved_btn").click().run()
+
+    assert not at.exception
+    assert [r["company"] for r in storage.load_saved()] == ["High", "Low", "Unscored"]
+
+
+def test_closed_postings_still_sort_last_regardless_of_fit_score():
+    storage.save_saved([
+        {
+            "company": "Closed High Score", "title": "A", "link": "", "date_saved": "2026-01-01",
+            "fit_score": 10, "posting_status": storage.POSTING_STATUS_CLOSED,
+        },
+        {"company": "Open Low Score", "title": "B", "link": "", "date_saved": "2026-01-01", "fit_score": 1},
+    ])
+
+    at = AppTest.from_function(_render_saved).run()
+    at.button(key="save_saved_btn").click().run()
+
+    assert not at.exception
+    assert [r["company"] for r in storage.load_saved()] == ["Open Low Score", "Closed High Score"]
+
+
 def test_hide_closed_toggle_not_shown_when_nothing_is_closed():
     storage.save_saved([{"company": "Acme", "title": "Backend", "link": "", "date_saved": "2026-01-01"}])
 
@@ -353,6 +383,59 @@ def test_calculate_fit_skips_positions_that_already_have_a_score(monkeypatch):
     globex = next(r for r in saved if r["company"] == "Globex")
     assert acme["fit_score"] == 5 and acme["fit_notes"] == "Old."
     assert globex["fit_score"] == 9
+
+
+def test_calculate_fit_skips_closed_postings(monkeypatch):
+    from src import fit_analysis
+
+    storage.save_resume("My resume")
+    storage.save_saved(
+        [
+            {
+                "company": "Acme", "title": "Backend", "link": "", "date_saved": "2026-01-01",
+                "posting_status": storage.POSTING_STATUS_CLOSED,
+            },
+            {"company": "Globex", "title": "Frontend", "link": "", "date_saved": "2026-01-02"},
+        ]
+    )
+
+    scored = []
+
+    def fake_analyze(resume_text, job, model=None):
+        scored.append(job["company"])
+        return {"fit_score": 9, "fit_notes": "New."}
+
+    monkeypatch.setattr(fit_analysis, "analyze", fake_analyze)
+
+    at = AppTest.from_function(_render_saved).run()
+    at = at.button(key="calc_fit_saved_btn").click().run()
+
+    assert not at.exception
+    assert scored == ["Globex"]
+    saved = storage.load_saved()
+    acme = next(r for r in saved if r["company"] == "Acme")
+    assert acme.get("fit_score") in (None, "")
+
+
+def test_calculate_fit_shows_info_when_only_closed_postings_are_unscored():
+    storage.save_resume("My resume")
+    storage.save_saved(
+        [
+            {
+                "company": "Acme", "title": "Backend", "link": "", "date_saved": "2026-01-01",
+                "posting_status": storage.POSTING_STATUS_CLOSED,
+            },
+            {"company": "Globex", "title": "Frontend", "link": "", "date_saved": "2026-01-02", "fit_score": 5},
+        ]
+    )
+
+    at = AppTest.from_function(_render_saved).run()
+    at = at.button(key="calc_fit_saved_btn").click().run()
+
+    assert not at.exception
+    assert any("already has a fit score" in i.value for i in at.info)
+    acme = next(r for r in storage.load_saved() if r["company"] == "Acme")
+    assert acme.get("fit_score") in (None, "")
 
 
 def test_calculate_fit_persists_each_position_before_scoring_the_next(monkeypatch):
