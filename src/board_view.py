@@ -41,6 +41,20 @@ def _save_call_notes(index: int, call_notes: str) -> None:
     storage.save_applied(applied)
 
 
+def _add_call_entry(index: int, call_date: date, notes: str) -> None:
+    """Prepends a new dated entry to call_notes instead of overwriting it -
+    the only way this dialog used to let you record a call was the single
+    free-edit box below, which meant a second call replaced the first one
+    unless you manually kept both in your head. Same string field (so the
+    Table view and existing records need no migration), just appended to
+    rather than replaced."""
+    applied = storage.load_applied()
+    existing = (applied[index].get("call_notes") or "").strip()
+    entry = f"### {call_date.isoformat()}\n{notes.strip()}"
+    applied[index]["call_notes"] = f"{entry}\n\n{existing}" if existing else entry
+    storage.save_applied(applied)
+
+
 @st.dialog("Call details", width="large")
 def _call_notes_dialog(index: int) -> None:
     applied = storage.load_applied()
@@ -49,19 +63,33 @@ def _call_notes_dialog(index: int) -> None:
     notes_col, chat_col = st.columns([2, 1], gap="large")
 
     with notes_col:
+        add_date_col, add_notes_col = st.columns([1, 3])
+        with add_date_col:
+            new_call_date = st.date_input("Date", value=date.today(), key=f"new_call_date_{index}")
+        with add_notes_col:
+            new_call_notes = st.text_area(
+                "What happened", key=f"new_call_notes_{index}", height=68,
+                label_visibility="collapsed", placeholder="What happened on this call?",
+            )
+        if st.button("Log a new call", key=f"add_call_btn_{index}", type="primary", use_container_width=True):
+            if new_call_notes.strip():
+                _add_call_entry(index, new_call_date, new_call_notes)
+                st.rerun()
+            else:
+                st.error("Enter what happened on the call before adding it.")
+
+        st.divider()
+        st.caption("Full history (edit directly if needed)")
         call_notes = st.text_area(
             "Call details",
             value=record.get("call_notes", ""),
-            height=500,
+            height=350,
             key=f"call_notes_{index}",
             label_visibility="collapsed",
         )
-
-        _, save_col = st.columns([4, 1])
-        with save_col:
-            if st.button("Save call notes", key=f"save_call_notes_{index}", type="primary"):
-                _save_call_notes(index, call_notes)
-                st.rerun()
+        if st.button("Save call notes", key=f"save_call_notes_{index}"):
+            _save_call_notes(index, call_notes)
+            st.rerun()
 
     with chat_col:
         chat_view.render()
@@ -226,8 +254,16 @@ def render(
                             _card_details_dialog(i)
 
                     if record.get("call_notes"):
-                        with st.expander("Call notes"):
-                            st.write(record["call_notes"])
+                        # A pop-up dialog rather than an inline expander -
+                        # reuses _call_notes_dialog (same one "Log call"
+                        # opens) so viewing notes and editing them happen in
+                        # the same place instead of two different surfaces.
+                        if st.button(
+                            "Call notes", key=f"view_call_notes_btn_{i}",
+                            icon="💬", help="View call notes",
+                            use_container_width=True,
+                        ):
+                            _call_notes_dialog(i)
 
                     # The link button needs its own full-width row: its
                     # accessible name/label has to actually read "Open job
@@ -245,13 +281,14 @@ def render(
 
                     action_cols = st.columns([1, 2], vertical_alignment="center")
                     with action_cols[0]:
-                        if stage == "Applied":
-                            # Opens _call_notes_dialog, a free-text notes
-                            # field for a call that already happened (or is
-                            # in progress) - not a scheduler, hence "Log",
-                            # not "Schedule".
-                            if st.button("Log call", key=f"in_a_call_btn_{i}", help="Add notes from a call"):
-                                _call_notes_dialog(i)
+                        # Opens _call_notes_dialog, a free-text notes field
+                        # for a call that already happened (or is in
+                        # progress) - not a scheduler, hence "Log", not
+                        # "Schedule". Available at every active pipeline
+                        # stage, not just "Applied", since calls happen at
+                        # any point before a final outcome.
+                        if st.button("Log call", key=f"in_a_call_btn_{i}", help="Add notes from a call"):
+                            _call_notes_dialog(i)
                     with action_cols[1]:
                         new_stage = st.selectbox(
                             "Stage",
