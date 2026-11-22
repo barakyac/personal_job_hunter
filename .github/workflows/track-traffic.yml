@@ -1,0 +1,33 @@
+name: Track GitHub traffic
+
+# GitHub's traffic/clones API only reports a rolling 14-day window - this
+# runs weekly, merges the latest numbers into a committed history file, and
+# pushes the update, so the data survives past that window instead of being
+# lost the moment it ages out.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"  # every Monday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot-clones:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch latest clone traffic and merge into history
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/track_github_clones.py --history-file .github/traffic/clones_history.json
+
+      - name: Commit updated history
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/traffic/clones_history.json
+          git diff --cached --quiet || git commit -m "Update GitHub clone traffic history"
+          git push
