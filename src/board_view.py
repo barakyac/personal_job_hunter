@@ -92,7 +92,24 @@ def _call_notes_dialog(index: int) -> None:
             st.rerun()
 
     with chat_col:
-        chat_view.render()
+        panel = st.segmented_control(
+            "Panel", ["Assistant", "Job description"], default="Assistant",
+            key=f"call_dialog_panel_{index}", label_visibility="collapsed",
+        )
+        panel = panel or "Assistant"
+        if panel == "Assistant":
+            chat_view.render()
+        else:
+            st.subheader("Job description")
+            description = record.get("description") or ""
+            if description.strip():
+                st.text_area(
+                    "Job description", value=description, height=500,
+                    key=f"call_dialog_description_{index}", disabled=True,
+                    label_visibility="collapsed",
+                )
+            else:
+                st.caption("No job description saved for this position yet.")
 
 
 def _save_record_fields(index: int, fields: dict) -> None:
