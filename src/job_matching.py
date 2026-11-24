@@ -188,6 +188,50 @@ def save_to_saved_jobs(record: dict) -> bool:
     return True
 
 
+def apply_to_applied_jobs(record: dict) -> bool:
+    """Copy a match straight into Applied Positions - skipping Saved Jobs -
+    for when the user already applied to this posting outside the app, and
+    mark the match Applied. Returns False, writing nothing, when the
+    posting is already tracked in Saved or Applied."""
+    records = storage.load_matched()
+    idx = _find_index(records, record)
+    if idx is None:
+        return False
+    match = records[idx]
+    others = [r for i, r in enumerate(records) if i != idx]
+    where = find_tracked(match, matched=others)
+    if where in ("saved", "applied"):
+        records[idx]["match_status"] = storage.MATCH_STATUS_APPLIED
+        storage.save_matched(records)
+        return False
+
+    applied = storage.load_applied()
+    source_line = f"Found via {match.get('source', '')}"
+    if match.get("source_detail"):
+        source_line += f": {match['source_detail']}"
+    today = dt.date.today().isoformat()
+    applied.append({
+        "company": match.get("company", ""),
+        "title": match.get("title", ""),
+        "link": match.get("link", ""),
+        "location": match.get("location", ""),
+        "salary": match.get("salary", ""),
+        "date_saved": today,
+        "date_applied": today,
+        "status": "Applied",
+        "rejected_from_stage": "",
+        "notes": source_line,
+        "call_notes": "",
+        "description": match.get("description", ""),
+        "fit_score": match.get("fit_score"),
+        "fit_notes": match.get("fit_notes", ""),
+    })
+    storage.save_applied(applied)
+    records[idx]["match_status"] = storage.MATCH_STATUS_APPLIED
+    storage.save_matched(records)
+    return True
+
+
 def score_matches(records_to_score: list[dict], on_progress=None, model: str = ollama_client.DEFAULT_MODEL) -> list[str]:
     """Fit-score each given match against the resume with the same prompt
     Saved Jobs uses, saving after each one so a failure mid-batch keeps

@@ -32,9 +32,12 @@ filters and fit scoring.
    careers-page or ATS results (greenhouse.io, lever.co, comeet,
    ashbyhq, workday). Skip aggregator spam.
 5. **Open each promising posting** (click the card, or open its
-   `/jobs/view/<id>/` link) to get the full description. Keep it for the
-   matches you add. Fit scoring is much better with it. Aim for quality: 10-25
-   genuinely relevant roles, not everything on the page.
+   `/jobs/view/<id>/` link) and copy its full "About the job" text verbatim -
+   every match you add must carry a real description, never a blank one.
+   Fit scoring needs it, and so does the "Job description" expander on the
+   Matching Jobs page - a match with no description shows no expander at all,
+   so the user can't read it there. Aim for quality: 10-25 genuinely relevant
+   roles, not everything on the page.
 6. **Write them to a file** at `data/agent/matches_<source>.json`. It holds a
    list of `{company, title, link, location, salary, description,
    source_detail}`. `source_detail` says where you found it, for example
@@ -51,6 +54,8 @@ filters and fit scoring.
 
 ## Rules
 
+- Always copy the full job description into every match you write to the
+  JSON file - never leave `description` blank or skip it to save time.
 - Read only. Never click Apply, Easy Apply, Save, message a recruiter or
   change any LinkedIn setting. Saving is done in this app, by the user.
 - Close the tabs you opened when you're done.

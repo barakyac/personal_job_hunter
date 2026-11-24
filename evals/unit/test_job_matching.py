@@ -118,6 +118,28 @@ def test_save_to_saved_jobs_does_not_duplicate_an_existing_saved_job():
     assert storage.load_matched()[0]["match_status"] == storage.MATCH_STATUS_SAVED
 
 
+def test_apply_to_applied_jobs_copies_and_marks_applied():
+    job_matching.add_candidates([_job(fit_score=8, fit_notes="good", source_detail="LinkedIn: picks")], "src")
+    assert job_matching.apply_to_applied_jobs(_job()) is True
+
+    [applied] = storage.load_applied()
+    assert applied["company"] == "Acme"
+    assert applied["description"] == "Python, Azure, distributed systems"
+    assert applied["fit_score"] == 8
+    assert applied["status"] == "Applied"
+    assert applied["date_applied"]
+    assert "LinkedIn: picks" in applied["notes"]
+    assert storage.load_matched()[0]["match_status"] == storage.MATCH_STATUS_APPLIED
+
+
+def test_apply_to_applied_jobs_does_not_duplicate_an_existing_applied_job():
+    job_matching.add_candidates([_job()], "src")
+    storage.save_applied([{"company": "Acme", "title": "Backend Engineer", "link": "https://acme.example/jobs/1"}])
+    assert job_matching.apply_to_applied_jobs(_job()) is False
+    assert len(storage.load_applied()) == 1
+    assert storage.load_matched()[0]["match_status"] == storage.MATCH_STATUS_APPLIED
+
+
 # --- scoring ---------------------------------------------------------------
 
 def test_score_matches_writes_scores_and_reports_errors(monkeypatch):

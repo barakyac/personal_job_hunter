@@ -11,6 +11,12 @@ from src import gmail_client, job_matching, job_search_client, layout, ollama_cl
 STATUS_FILTER_KEY = "matches_status_filter"
 
 
+@st.dialog("Job description")
+def _description_dialog(record: dict) -> None:
+    st.markdown(f"**{record.get('company') or 'Unknown company'} - {record.get('title') or 'Untitled'}**")
+    st.write(record.get("description") or "")
+
+
 def _row_key(record: dict) -> str:
     basis = job_matching.canonical_link(record.get("link", "")) or "|".join(job_matching._identity(record))
     return hashlib.md5(basis.encode("utf-8")).hexdigest()[:12]
@@ -141,7 +147,9 @@ def _render_row(record: dict) -> None:
     key = _row_key(record)
     status = record.get("match_status") or storage.MATCH_STATUS_NEW
     with st.container(border=True):
-        info_col, fit_col, save_col, dismiss_col, open_col = st.columns([3, 1.6, 1.1, 0.9, 0.8])
+        info_col, fit_col, save_col, apply_col, dismiss_col, desc_col, open_col = st.columns(
+            [3, 1.4, 1.0, 1.3, 0.8, 1.1, 0.8]
+        )
         with info_col:
             st.markdown(
                 layout.company_mark(record.get("company", ""))
@@ -166,12 +174,22 @@ def _render_row(record: dict) -> None:
         with save_col:
             if status == storage.MATCH_STATUS_SAVED:
                 st.caption("In Saved Jobs")
+            elif status == storage.MATCH_STATUS_APPLIED:
+                st.caption("In Applied Positions")
             elif st.button("Save job", key=f"match_save_{key}", type="primary"):
                 if job_matching.save_to_saved_jobs(record):
                     st.toast(f"Saved {record.get('company') or 'job'} to Saved Jobs.")
                 else:
                     st.toast("Already in Saved Jobs or Applied.")
                 st.rerun()
+        with apply_col:
+            if status == storage.MATCH_STATUS_NEW:
+                if st.button("Add to Applications", key=f"match_apply_{key}"):
+                    if job_matching.apply_to_applied_jobs(record):
+                        st.toast(f"Added {record.get('company') or 'job'} to Applied Positions.")
+                    else:
+                        st.toast("Already in Saved Jobs or Applied.")
+                    st.rerun()
         with dismiss_col:
             if status == storage.MATCH_STATUS_DISMISSED:
                 if st.button("Restore", key=f"match_restore_{key}"):
@@ -181,6 +199,9 @@ def _render_row(record: dict) -> None:
                 if st.button("Dismiss", key=f"match_dismiss_{key}"):
                     job_matching.set_status(record, storage.MATCH_STATUS_DISMISSED)
                     st.rerun()
+        with desc_col:
+            if record.get("description") and st.button("Job description", key=f"match_description_{key}"):
+                _description_dialog(record)
         with open_col:
             if record.get("link"):
                 st.markdown(f"[Open ↗]({record['link']})")

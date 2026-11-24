@@ -36,6 +36,26 @@ def test_new_matches_sorted_best_fit_first_and_dismissed_hidden():
     assert "High" in markdown[0] and "Low" in markdown[1]
 
 
+def test_description_button_shown_only_when_present():
+    _seed()
+    at = AppTest.from_function(_render).run()
+    assert not at.exception
+    buttons = [b for b in at.button if b.key and b.key.startswith("match_description_")]
+    # Only "High" has a description; "Low" and "Gone" (dismissed, hidden) do not.
+    assert len(buttons) == 1
+
+
+def test_description_button_opens_a_dialog_with_the_full_text():
+    _seed()
+    at = AppTest.from_function(_render).run()
+    button = next(b for b in at.button if b.key and b.key.startswith("match_description_"))
+    at = button.click().run()
+
+    assert not at.exception
+    assert any("desc" in m.value for m in at.markdown)
+    assert any("High" in m.value and "Backend" in m.value for m in at.markdown)
+
+
 def test_save_button_moves_match_to_saved_jobs():
     _seed()
     at = AppTest.from_function(_render).run()
@@ -43,6 +63,15 @@ def test_save_button_moves_match_to_saved_jobs():
     save_btn.click().run()
     assert not at.exception
     assert [r["company"] for r in storage.load_saved()] == ["High"]
+
+
+def test_apply_button_moves_match_to_applied_positions():
+    _seed()
+    at = AppTest.from_function(_render).run()
+    apply_btn = next(b for b in at.button if b.key and b.key.startswith("match_apply_"))
+    apply_btn.click().run()
+    assert not at.exception
+    assert [r["company"] for r in storage.load_applied()] == ["High"]
 
 
 def test_dismiss_button_hides_match():
