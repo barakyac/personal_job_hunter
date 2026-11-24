@@ -85,12 +85,16 @@ def test_build_new_opportunities_query_excludes_known_companies():
     assert '-subject:"Koda.security"' in query
 
 
-def test_build_unlisted_applications_query_excludes_known_companies():
-    query = gmail_client.build_unlisted_applications_query(["Acme", "Globex"], newer_than_days=30)
+def test_build_unlisted_applications_query_does_not_exclude_known_companies():
+    """Unlike build_new_opportunities_query, this one deliberately doesn't
+    exclude by company name - a company with some other role already
+    tracked can still have a genuinely untracked application against it
+    (see mail_view._application_already_tracked, which checks company+title
+    once extraction knows both)."""
+    query = gmail_client.build_unlisted_applications_query(newer_than_days=30)
     assert "newer_than:30d" in query
     assert '"thank you for applying"' in query
-    assert '-subject:"Acme"' in query
-    assert '-subject:"Globex"' in query
+    assert "-subject:" not in query
 
 
 def test_application_received_phrases_do_not_catch_an_ats_identity_verification_email():
@@ -110,12 +114,6 @@ def test_application_received_phrases_do_not_catch_an_ats_identity_verification_
         "code will expire in 10 minutes."
     ).lower()
     assert not any(phrase in email_text for phrase in gmail_client.APPLICATION_RECEIVED_PHRASES)
-
-
-def test_build_unlisted_applications_query_skips_blank_company_names():
-    query = gmail_client.build_unlisted_applications_query(["", "  ", "Acme"])
-    assert query.count('-subject:"') == 1
-    assert '-subject:"Acme"' in query
 
 
 def test_looks_like_rejection():
@@ -809,5 +807,5 @@ def test_clear_oauth_config_does_nothing_when_never_configured():
 
 
 def test_build_unlisted_applications_query_defaults_to_the_past_month():
-    query = gmail_client.build_unlisted_applications_query(["Acme"])
+    query = gmail_client.build_unlisted_applications_query()
     assert "newer_than:30d" in query

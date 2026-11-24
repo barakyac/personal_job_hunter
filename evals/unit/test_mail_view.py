@@ -1785,7 +1785,12 @@ def test_find_untracked_applications_skips_messages_without_a_clear_company(monk
     assert not any(b.key == "add_unlisted_app-2" for b in at.button)
 
 
-def test_find_untracked_applications_excludes_applied_and_saved_companies(monkeypatch):
+def test_find_untracked_applications_query_does_not_exclude_tracked_companies(monkeypatch):
+    """The Gmail query itself no longer excludes by company name - a
+    company with some other role already tracked can still have a
+    genuinely untracked application against it. See
+    test_find_untracked_applications_filters_out_already_tracked_company_named_only_in_body
+    for the company+title check that happens after extraction instead."""
     _connect_for_unlisted_scan(monkeypatch)
     storage.save_applied([{"company": "Acme", "title": "Backend", "status": "Applied"}])
     storage.save_saved([{"company": "Initech", "title": "DevOps", "link": "", "date_saved": "2026-01-01"}])
@@ -1802,8 +1807,103 @@ def test_find_untracked_applications_excludes_applied_and_saved_companies(monkey
     at.button(key="scan_unlisted_btn").click().run()
 
     unlisted_query = next(q for q in captured_queries if "thank you for applying" in q)
-    assert '-subject:"Acme"' in unlisted_query
-    assert '-subject:"Initech"' in unlisted_query
+    assert "-subject:" not in unlisted_query
+
+
+def test_find_untracked_applications_surfaces_a_different_role_at_a_saved_company(monkeypatch):
+    """Regression guard, genericized from a real ATS (Lever) confirmation
+    email observed live: a company already Saved for one role must not
+    suppress a genuine application-confirmation email for a different role
+    at that same company."""
+    _connect_for_unlisted_scan(monkeypatch)
+    storage.save_saved([{"company": "Acme", "title": "C++ Software Developer", "link": "", "date_saved": "2026-01-01"}])
+
+    monkeypatch.setattr(
+        gmail_client,
+        "search_messages",
+        lambda query, service=None, max_results=5: (
+            [
+                {
+                    "id": "app-4",
+                    "thread_id": "t4",
+                    "subject": "Thank you for your application to Acme",
+                    "sender": "Acme <no-reply@hire.eu.lever.co>",
+                    "date": "Mon, 23 Nov 2026",
+                    "snippet": (
+                        "Dear there, Thank you for your interest in Acme! We wanted to let you know "
+                        "we received your application for Senior Backend Python Developer, If your "
+                        "experience and skills match our needs for the role we'll contact you to "
+                        "explain further details."
+                    ),
+                    "looks_like_rejection": False,
+                }
+            ]
+            if "thank you for applying" in query
+            else []
+        ),
+    )
+    monkeypatch.setattr(
+        job_extract,
+        "extract_fields",
+        lambda description, model=job_extract.DEFAULT_MODEL: {
+            "company": "Acme", "title": "Senior Backend Python Developer", "location": "", "salary": ""
+        },
+    )
+
+    at = AppTest.from_function(_render_mail).run()
+    at = at.button(key="scan_unlisted_btn").click().run()
+
+    assert not at.exception
+    assert any("Untracked applications (1)" in s.value for s in at.subheader)
+    assert any(b.key == "add_unlisted_app-4" for b in at.button)
+
+
+def test_find_untracked_applications_falls_back_to_company_only_when_title_is_blank(monkeypatch):
+    """Regression guard, genericized from a real referral email observed
+    live: a referral's subject+snippet doesn't always name a specific
+    role, so extraction comes back with an empty title. With no title to
+    compare, the already-tracked check must fall back to company-only
+    matching rather than treat the blank title as proof this is a
+    different, untracked role."""
+    _connect_for_unlisted_scan(monkeypatch)
+    storage.save_applied([{"company": "Acme", "title": "Senior Software Engineer", "status": "Applied"}])
+
+    monkeypatch.setattr(
+        gmail_client,
+        "search_messages",
+        lambda query, service=None, max_results=5: (
+            [
+                {
+                    "id": "app-5",
+                    "thread_id": "t5",
+                    "subject": "You've Been Referred to Acme by a Colleague",
+                    "sender": "Acme Human Resources <hr@acme.example>",
+                    "date": "Mon, 26 Oct 2026",
+                    "snippet": (
+                        "Hello there, We're pleased to share that a colleague referred you for an "
+                        "opportunity with Acme. At Acme, we're driven by innovation and inspired by"
+                    ),
+                    "looks_like_rejection": False,
+                }
+            ]
+            if "you have been referred" in query
+            else []
+        ),
+    )
+    monkeypatch.setattr(
+        job_extract,
+        "extract_fields",
+        lambda description, model=job_extract.DEFAULT_MODEL: {
+            "company": "Acme", "title": "", "location": "", "salary": ""
+        },
+    )
+
+    at = AppTest.from_function(_render_mail).run()
+    at = at.button(key="scan_unlisted_btn").click().run()
+
+    assert not at.exception
+    assert any("No untracked application emails found." in c.value for c in at.caption)
+    assert not any(b.key == "add_unlisted_app-5" for b in at.button)
 
 
 def test_adding_opportunity_already_saved_skips_without_duplicating(monkeypatch):
@@ -1906,9 +2006,9 @@ def test_find_untracked_applications_filters_out_already_tracked_company_named_o
     """Regression guard: an ATS confirmation with a generic subject (no
     company name in it) isn't caught by the Gmail query's subject-scoped
     exclusion - it must still be filtered once extraction reveals the real
-    company name matches one already tracked."""
+    company+title match one already tracked."""
     _connect_for_unlisted_scan(monkeypatch)
-    storage.save_applied([{"company": "Plaee", "title": "Backend", "status": "Applied"}])
+    storage.save_applied([{"company": "Plaee", "title": "Back End Engineer", "status": "Applied"}])
 
     monkeypatch.setattr(
         gmail_client,

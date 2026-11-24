@@ -428,14 +428,23 @@ def build_new_opportunities_query(known_companies: list[str] | None = None, newe
     return _exclude_known_companies(query, known_companies or [])
 
 
-def build_unlisted_applications_query(known_companies: list[str], newer_than_days: int = 30) -> str:
-    """Gmail search query for application-confirmation-style mail that
-    isn't about a company already tracked in this app - the ones this app
-    would otherwise never surface, because every other scan here only
-    looks at companies you've already added."""
+def build_unlisted_applications_query(newer_than_days: int = 30) -> str:
+    """Gmail search query for application-confirmation-style mail - the
+    ones this app would otherwise never surface, because every other scan
+    here only looks at companies you've already added.
+
+    Deliberately doesn't exclude already-tracked companies by subject the
+    way build_new_opportunities_query does: a tracked company can still
+    have a genuinely untracked application against it - e.g. a company you
+    only *Saved* one role for, that you then separately applied to for a
+    different role. Excluding by company name alone (observed live: one
+    role Saved, a confirmation email for a different role applied to
+    directly) silently dropped that second application instead of
+    surfacing it. The company+title check that actually decides "already
+    tracked" happens after extraction, in
+    mail_view._application_already_tracked, where both are known."""
     phrases = " OR ".join(f'"{p}"' for p in APPLICATION_RECEIVED_PHRASES)
-    query = f"({phrases}) newer_than:{newer_than_days}d"
-    return _exclude_known_companies(query, known_companies)
+    return f"({phrases}) newer_than:{newer_than_days}d"
 
 
 def _parse_message(msg: dict) -> dict:

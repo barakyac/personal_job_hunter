@@ -273,16 +273,20 @@ def _scan_opportunities() -> None:
             st.session_state[OPPORTUNITIES_KEY] = None
 
 
-def _scan_unlisted_applications(known_companies: list[str]) -> None:
-    """Find application-confirmation (and referral) mail about companies
-    this app doesn't track at all (neither Applied nor Saved), then
-    classify each match one at a time with Ollama - the keyword-based
-    Gmail query is just a first pass, so a message only counts if the
-    model can actually pull a company name out of it. Unlike
-    _scan_applications/_scan_opportunities (cheap metadata-only reads),
-    this one calls Ollama per match - still auto-run once per session (see
-    render()), since the match count per scan is small (max 15, gated by
-    the keyword query)."""
+def _scan_unlisted_applications() -> None:
+    """Find application-confirmation (and referral) mail for a job this app
+    doesn't already track as applied, then classify each match one at a
+    time with Ollama - the keyword-based Gmail query is just a first pass,
+    so a message only counts if the model can actually pull a company name
+    out of it. Unlike _scan_applications/_scan_opportunities (cheap
+    metadata-only reads), this one calls Ollama per match - still auto-run
+    once per session (see render()), since the match count per scan is
+    small (max 15, gated by the keyword query).
+
+    The Gmail query itself doesn't exclude already-tracked companies (see
+    gmail_client.build_unlisted_applications_query) - company+title
+    matching against what's already tracked only happens below, once
+    extraction knows the title too."""
     with st.spinner("Scanning Gmail for applications not tracked here..."):
         try:
             service = gmail_client.get_service()
@@ -295,7 +299,7 @@ def _scan_unlisted_applications(known_companies: list[str]) -> None:
             st.session_state[UNLISTED_KEY] = None
             return
 
-        query = gmail_client.build_unlisted_applications_query(known_companies)
+        query = gmail_client.build_unlisted_applications_query()
         try:
             messages = gmail_client.search_messages(query, service=service, max_results=15)
         except gmail_client.GmailError as exc:
@@ -313,13 +317,7 @@ def _scan_unlisted_applications(known_companies: list[str]) -> None:
                 fields = job_extract.extract_fields(f"{msg['subject']}\n{msg['snippet']}")
             except ollama_client.OllamaError:
                 fields = {"company": "", "title": "", "location": "", "salary": ""}
-            # The Gmail query's -subject:"Company" exclusion only catches
-            # a company named in the subject line - a lot of ATS auto-
-            # replies use a generic subject ("We Got It: Thanks for
-            # applying...") and only name the company in the body. Now that
-            # extraction has pulled the real company name out of that body
-            # text, re-check it against what's already tracked.
-            if fields.get("company") and not _company_already_tracked(fields["company"]):
+            if fields.get("company") and not _application_already_tracked(fields["company"], fields.get("title", "")):
                 classified.append({"msg": msg, "fields": fields})
             progress.progress((n + 1) / len(messages))
         progress.empty()
@@ -530,6 +528,39 @@ def _company_already_tracked(company: str) -> bool:
         return False
     tracked = (storage.load_saved(), storage.load_applied())
     return any((r.get("company") or "").strip().lower() == company for records in tracked for r in records)
+
+
+def _application_already_tracked(company: str, title: str) -> bool:
+    """True if this company+title is already in Saved or Applied Positions
+    (case-insensitive). Deliberately keyed on company+title, not company
+    alone like _company_already_tracked - that company-only check is right
+    for a job-alert opportunity (if you're already pursuing a company at
+    all, a new alert for it isn't worth re-saving), but wrong here: an
+    application-confirmation email is itself proof a specific job was
+    applied to, and a company having some other role Saved or Applied
+    doesn't mean *this* role is tracked (observed live: a company had one
+    role Saved, and a separate application-confirmation email for an
+    unrelated role was silently dropped as "already tracked").
+
+    Falls back to the company-only check when `title` is blank - a
+    referral or confirmation email's subject+snippet doesn't always name a
+    specific role (observed live: a referral naming only the company, cut
+    off before any job title), and with no title to compare, assuming
+    "different role, so untracked" is the wrong direction to guess: it
+    would resurface an already-tracked application as new on every scan
+    rather than, at worst, miss a second real application to that company
+    that happens to also arrive title-less."""
+    company = (company or "").strip().lower()
+    title = (title or "").strip().lower()
+    if not company:
+        return False
+    tracked = (storage.load_saved(), storage.load_applied())
+    company_records = [r for records in tracked for r in records if (r.get("company") or "").strip().lower() == company]
+    if not company_records:
+        return False
+    if not title:
+        return True
+    return any((r.get("title") or "").strip().lower() == title for r in company_records)
 
 
 def _fetch_description(link: str) -> str:
@@ -774,8 +805,6 @@ def render() -> None:
         {(r.get("company") or "").strip() for r in applied if (r.get("company") or "").strip()}
     )
 
-    unlisted_known_companies = companies + [r.get("company", "") for r in storage.load_saved()]
-
     # Auto-scan once per session as soon as Gmail is connected, so results
     # (and any rejection/opportunity/untracked-application alerts) show up
     # without a manual click.
@@ -784,7 +813,7 @@ def render() -> None:
     if OPPORTUNITIES_KEY not in st.session_state:
         _scan_opportunities()
     if UNLISTED_KEY not in st.session_state:
-        _scan_unlisted_applications(unlisted_known_companies)
+        _scan_unlisted_applications()
 
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -797,7 +826,7 @@ def render() -> None:
         if st.button(
             f"Rescan untracked applications (Ollama {job_extract.DEFAULT_MODEL})", key="scan_unlisted_btn"
         ):
-            _scan_unlisted_applications(unlisted_known_companies)
+            _scan_unlisted_applications()
 
     # Rendered after any scan above has had a chance to run this pass, so a
     # fresh sync shows up immediately instead of a run behind.
