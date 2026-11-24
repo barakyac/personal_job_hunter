@@ -41,6 +41,14 @@ def _resume_file() -> Path:
     return data_dir() / "resume.md"
 
 
+def _matched_file() -> Path:
+    return data_dir() / "matched_jobs.json"
+
+
+def _match_profile_file() -> Path:
+    return data_dir() / "match_profile.json"
+
+
 def personal_dir() -> Path:
     return data_dir() / "personal"
 
@@ -124,6 +132,61 @@ def load_applied() -> list[dict]:
 
 def save_applied(records: list[dict]) -> None:
     _save(_applied_file(), records)
+
+
+# Matching Jobs: candidate postings found by a source (Gmail job alerts,
+# Google Jobs search, or Claude browsing LinkedIn/Google in Chrome) that the
+# user hasn't decided on yet. Kept separate from saved_positions.json so a
+# scan that pulls in 30 maybe-relevant jobs never floods Saved Jobs - a
+# match only becomes a Saved Position when the user picks it.
+MATCH_STATUS_NEW = "New"
+MATCH_STATUS_SAVED = "Saved"
+MATCH_STATUS_DISMISSED = "Dismissed"
+MATCH_STATUS_OPTIONS = [MATCH_STATUS_NEW, MATCH_STATUS_SAVED, MATCH_STATUS_DISMISSED]
+
+MATCH_SOURCE_GMAIL = "Gmail alert"
+MATCH_SOURCE_GOOGLE = "Google Jobs"
+MATCH_SOURCE_LINKEDIN = "LinkedIn (Claude)"
+MATCH_SOURCE_GOOGLE_CLAUDE = "Google (Claude)"
+MATCH_SOURCE_OPTIONS = [MATCH_SOURCE_GMAIL, MATCH_SOURCE_GOOGLE, MATCH_SOURCE_LINKEDIN, MATCH_SOURCE_GOOGLE_CLAUDE]
+
+MATCHED_COLUMNS = [
+    "company", "title", "link", "location", "salary", "source", "source_detail",
+    "date_found", "match_status", "description", "fit_score", "fit_notes",
+]
+
+DEFAULT_MATCH_PROFILE = {
+    "titles": [],
+    "location": "",
+    "keywords": [],
+    "exclude_keywords": [],
+}
+
+
+def load_matched() -> list[dict]:
+    return _load(_matched_file())
+
+
+def save_matched(records: list[dict]) -> None:
+    _save(_matched_file(), records)
+
+
+def load_match_profile() -> dict:
+    """What "matches your profile" means for searches: target titles, a
+    location and optional keywords. Every key is always present, even for
+    a file written before a key existed."""
+    stored = {}
+    if _match_profile_file().exists():
+        with _match_profile_file().open("r", encoding="utf-8") as f:
+            stored = json.load(f) or {}
+    return {**DEFAULT_MATCH_PROFILE, **{k: v for k, v in stored.items() if k in DEFAULT_MATCH_PROFILE}}
+
+
+def save_match_profile(profile: dict) -> None:
+    data_dir().mkdir(parents=True, exist_ok=True)
+    clean = {k: profile.get(k, v) for k, v in DEFAULT_MATCH_PROFILE.items()}
+    with _match_profile_file().open("w", encoding="utf-8") as f:
+        json.dump(clean, f, indent=2)
 
 
 def load_resume() -> str:

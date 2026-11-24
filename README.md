@@ -46,6 +46,36 @@ instead of re-fetching the page.
 It skips adding a link that's already tracked (in either file) unless you
 pass `--force`.
 
+## Matching Jobs
+
+The "Matching Jobs" page collects jobs that match your profile from three
+sources into one list (`data/matched_jobs.json`), separate from Saved Jobs so
+a scan never floods it:
+
+- **Job-alert emails.** "Scan job-alert emails" reads your recent LinkedIn Job
+  Alerts and Glassdoor emails through the same read-only Gmail connection as
+  Mail Inbox.
+- **Google Jobs.** "Search Google Jobs" runs one search per target title
+  through SerpAPI's `google_jobs` engine. Set `SERPAPI_API_KEY` in `.env` or
+  `.streamlit/secrets.toml`. Google's own Custom Search JSON API is closed to
+  new customers and shuts down on January 1, 2027, so it isn't used.
+- **Claude in Chrome.** Ask Claude to "find matching jobs". The
+  `find-matching-jobs` skill (`.claude/skills/`) has it browse LinkedIn's
+  "Top job picks for you", LinkedIn search and Google in your own signed-in
+  Chrome, then add what it finds with:
+  ```bash
+  python scripts/add_match.py --source linkedin --json data/agent/matches_linkedin.json
+  python scripts/add_match.py --source google --company "..." --title "..." --link "..." [--description "..."]
+  ```
+
+Set your target titles, location, extra keywords and exclude keywords under
+"What counts as a match". Anything already in Matching Jobs, Saved Jobs or
+Applied is skipped, including a match you dismissed. LinkedIn's different
+link shapes for one posting are treated as the same job. "Score fit" rates
+new matches against your resume with the same Ollama prompt Saved Jobs
+uses. "Save job" copies a match into Saved Jobs, keeping its description and
+fit score.
+
 ## Testing
 
 ```bash
@@ -70,6 +100,7 @@ docker build -t job-hunter .
 docker run -p 8501:8501 \
   -e ANTHROPIC_API_KEY=... \
   -e OPENAI_API_KEY=... \
+  -e SERPAPI_API_KEY=... \
   -e GOOGLE_OAUTH_CLIENT_ID=... \
   -e GOOGLE_OAUTH_CLIENT_SECRET=... \
   -e GOOGLE_OAUTH_REDIRECT_URI=... \

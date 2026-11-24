@@ -21,7 +21,7 @@ from src import chat_view, gmail_client
 CURRENT_PAGE_KEY = "current_page"
 SHOW_ASSISTANT_KEY = "show_assistant"
 
-NAV_PAGES = ["Applications", "Saved Jobs", "Mail Inbox", "Profile"]
+NAV_PAGES = ["Applications", "Matching Jobs", "Saved Jobs", "Mail Inbox", "Profile"]
 
 _BASE_CSS = """
 <style>
@@ -263,7 +263,9 @@ def _settings_dialog() -> None:
 
 def render_top_nav(current_page: str) -> None:
     with st.container(key="top_nav"):
-        cols = st.columns([1.4, 1, 1, 1, 1, 0.1, 1.3, 0.55], gap="small", vertical_alignment="center")
+        cols = st.columns(
+            [1.4] + [1] * len(NAV_PAGES) + [0.1, 1.3, 0.55], gap="small", vertical_alignment="center"
+        )
         with cols[0]:
             st.markdown('<div class="jh-logo">🧭 Job Hunter</div>', unsafe_allow_html=True)
         for i, page in enumerate(NAV_PAGES):
@@ -276,14 +278,14 @@ def render_top_nav(current_page: str) -> None:
                     on_click=_set_page,
                     args=(page,),
                 )
-        with cols[6]:
+        with cols[len(NAV_PAGES) + 2]:
             st.button(
                 "Ask Assistant",
                 key="nav_ask_assistant",
                 use_container_width=True,
                 on_click=_toggle_assistant,
             )
-        with cols[7]:
+        with cols[len(NAV_PAGES) + 3]:
             if st.button("⚙️", key="nav_settings_btn", help="Settings"):
                 _settings_dialog()
 

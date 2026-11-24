@@ -1,7 +1,7 @@
 import streamlit as st
 from dotenv import load_dotenv
 
-from src import applications_view, layout, mail_view, resume_view, saved_view
+from src import applications_view, layout, mail_view, matches_view, resume_view, saved_view
 
 load_dotenv()  # picks up ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_OAUTH_CLIENT_* from a local .env, if present
 
@@ -9,6 +9,7 @@ st.set_page_config(page_title="Job Hunter Dashboard", layout="wide")
 
 PAGES = {
     "Applications": applications_view.render,
+    "Matching Jobs": matches_view.render,
     "Saved Jobs": saved_view.render,
     "Mail Inbox": mail_view.render,
     "Profile": resume_view.render,
