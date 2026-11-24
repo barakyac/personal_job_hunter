@@ -5,6 +5,20 @@ import streamlit as st
 from src import fit_analysis, job_extract, layout, ollama_client, storage
 
 
+def _unverified_fields_warning(fields: dict) -> str:
+    """The warning to show when job_extract couldn't verify some of its
+    output against the source text (see job_extract.unverified_fields) -
+    empty string when everything checked out, so callers can just
+    `if warning: st.warning(warning)`."""
+    unverified = fields.get("unverified")
+    if not unverified:
+        return ""
+    return (
+        f"Couldn't verify {', '.join(unverified)} against the posting text - "
+        "worth a second look before applying."
+    )
+
+
 def _fit_score_sort_key(record: dict) -> float:
     try:
         return -float(record.get("fit_score"))
@@ -189,6 +203,9 @@ def _render_add_job_popover() -> None:
                         storage.save_saved(records)
                         st.session_state["paste_popover_version"] = paste_version + 1
                         st.success(f"Added {fields['company'] or 'position'} to Saved Positions.")
+                        warning = _unverified_fields_warning(fields)
+                        if warning:
+                            st.warning(warning)
                         st.rerun()
 
 

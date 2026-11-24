@@ -19,13 +19,14 @@ def test_extract_fields_returns_model_values(monkeypatch):
 
     monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
 
-    fields = job_extract.extract_fields("posting text")
+    fields = job_extract.extract_fields("Acme is hiring a Backend Engineer in Remote for 100k.")
 
     assert fields == {
         "company": "Acme",
         "title": "Backend Engineer",
         "location": "Remote",
         "salary": "100k",
+        "unverified": [],
     }
 
 
@@ -34,7 +35,7 @@ def test_extract_fields_defaults_missing_keys_to_empty_string(monkeypatch):
 
     fields = job_extract.extract_fields("posting text")
 
-    assert fields == {"company": "", "title": "", "location": "", "salary": ""}
+    assert fields == {"company": "", "title": "", "location": "", "salary": "", "unverified": []}
 
 
 def test_extract_fields_treats_null_values_as_empty_string(monkeypatch):
@@ -74,6 +75,42 @@ def test_extract_fields_propagates_ollama_error(monkeypatch):
 
     with pytest.raises(ollama_client.OllamaError):
         job_extract.extract_fields("posting text")
+
+
+def test_unverified_fields_flags_a_value_with_no_overlap_with_the_source_text():
+    fields = {"company": "Acme", "title": "", "location": "", "salary": ""}
+
+    assert job_extract.unverified_fields(fields, "Nothing in here mentions that company.") == ["company"]
+
+
+def test_unverified_fields_accepts_case_and_punctuation_differences():
+    fields = {"company": "Acme, Inc.", "title": "", "location": "", "salary": ""}
+
+    assert job_extract.unverified_fields(fields, "ACME INC is hiring.") == []
+
+
+def test_unverified_fields_ignores_stealth_startup_placeholder():
+    fields = {"company": "Stealth Startup", "title": "", "location": "", "salary": ""}
+
+    assert job_extract.unverified_fields(fields, "A posting that never names the company.") == []
+
+
+def test_unverified_fields_ignores_empty_values():
+    fields = {"company": "", "title": "", "location": "", "salary": ""}
+
+    assert job_extract.unverified_fields(fields, "anything") == []
+
+
+def test_extract_fields_flags_a_hallucinated_value(monkeypatch):
+    def fake_chat_json(system, user, model=job_extract.DEFAULT_MODEL):
+        return {"company": "Acme", "title": "Backend Engineer", "location": "Mars", "salary": ""}
+
+    monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
+
+    fields = job_extract.extract_fields("Acme is hiring a Backend Engineer.")
+
+    # "Mars" appears nowhere in the posting - the model invented a location.
+    assert fields["unverified"] == ["location"]
 
 
 # Regression fixtures: real job-alert emails that previously produced wrong
@@ -117,6 +154,7 @@ def test_extract_opportunity_fields_parses_glassdoor_digest_subject_deterministi
         "title": "QA Automation Engineer",
         "location": "Tel Aviv-Yafo",
         "salary": "",
+        "unverified": [],
     }
 
 
@@ -162,9 +200,28 @@ def test_extract_opportunity_fields_falls_back_to_llm_for_non_digest_subject(mon
         "title": "Senior Software Engineer",
         "location": "",
         "salary": "",
+        "unverified": [],
     }
     assert "Mars Security is hiring: Senior Software Engineer" in seen["user"]
     assert "About Mars Security" in seen["user"]
     # The prompt should steer the model toward the subject over the snippet
     # when they conflict - see OPPORTUNITY_SYSTEM_PROMPT.
     assert "snippet" in seen["system"].lower()
+
+
+def test_extract_opportunity_fields_flags_unverified_value_from_llm_path(monkeypatch):
+    monkeypatch.setattr(
+        ollama_client,
+        "chat_json",
+        lambda system, user, model=job_extract.DEFAULT_MODEL: {
+            "company": "Mars Security", "title": "Senior Software Engineer", "location": "Jupiter", "salary": ""
+        },
+    )
+
+    fields = job_extract.extract_opportunity_fields(
+        "Mars Security is hiring: Senior Software Engineer",
+        "Mars Security Senior Software Engineer: About Mars Security...",
+    )
+
+    # "Jupiter" is nowhere in the subject or snippet - the model invented it.
+    assert fields["unverified"] == ["location"]

@@ -33,11 +33,44 @@ def _normalize_fields(result: dict) -> dict:
     }
 
 
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _words(text: str) -> set:
+    return set(_WORD_RE.findall(text.lower()))
+
+
+def unverified_fields(fields: dict, source_text: str) -> list[str]:
+    """Which of fields' values have no real overlap with source_text - a
+    cheap guard against the model inventing a plausible-looking value
+    instead of copying one that's actually in the posting/email. Compares
+    whole words (case-/punctuation-insensitive) rather than requiring an
+    exact substring, since the model is free to reformat things like
+    "$120,000-$150,000" into "$120k-$150k". "Stealth Startup" is a
+    deliberately synthesized placeholder (see SYSTEM_PROMPT) and is never
+    flagged."""
+    haystack = _words(source_text)
+    flagged = []
+    for field, value in fields.items():
+        if not value or value == "Stealth Startup":
+            continue
+        value_words = _words(value)
+        if value_words and not value_words & haystack:
+            flagged.append(field)
+    return flagged
+
+
 def extract_fields(description: str, model: str = DEFAULT_MODEL) -> dict:
-    """Pull company/title/location/salary out of pasted job description text."""
+    """Pull company/title/location/salary out of pasted job description
+    text. The returned dict also carries "unverified": the names of any
+    fields whose value doesn't actually appear in that text (see
+    unverified_fields) - callers can use it to flag a value worth a second
+    look instead of trusting it outright."""
     prompt = build_prompt(description)
     result = ollama_client.chat_json(SYSTEM_PROMPT, prompt, model=model)
-    return _normalize_fields(result)
+    fields = _normalize_fields(result)
+    fields["unverified"] = unverified_fields(fields, description)
+    return fields
 
 
 # Glassdoor's job-alert digest subject names the one job this particular
@@ -97,7 +130,11 @@ def extract_opportunity_fields(subject: str, snippet: str, model: str = DEFAULT_
             "title": match.group("title").strip(),
             "location": match.group("location").strip(),
             "salary": "",
+            # Parsed directly out of the subject line itself - nothing to verify.
+            "unverified": [],
         }
     prompt = build_opportunity_prompt(subject, snippet)
     result = ollama_client.chat_json(OPPORTUNITY_SYSTEM_PROMPT, prompt, model=model)
-    return _normalize_fields(result)
+    fields = _normalize_fields(result)
+    fields["unverified"] = unverified_fields(fields, f"{subject}\n{snippet}")
+    return fields

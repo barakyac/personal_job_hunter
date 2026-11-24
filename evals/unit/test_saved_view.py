@@ -42,6 +42,22 @@ def test_paste_popover_creates_saved_position(monkeypatch):
     assert records[0]["posting_status"] == storage.POSTING_STATUS_OPEN
 
 
+def test_unverified_fields_warning_lists_the_flagged_fields():
+    from src import saved_view
+
+    warning = saved_view._unverified_fields_warning({"unverified": ["location", "salary"]})
+
+    assert "location" in warning
+    assert "salary" in warning
+
+
+def test_unverified_fields_warning_is_empty_when_nothing_flagged():
+    from src import saved_view
+
+    assert saved_view._unverified_fields_warning({"unverified": []}) == ""
+    assert saved_view._unverified_fields_warning({}) == ""
+
+
 def test_paste_popover_clears_its_fields_after_a_successful_create(monkeypatch):
     monkeypatch.setattr(
         job_extract,

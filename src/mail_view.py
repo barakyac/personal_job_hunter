@@ -10,6 +10,7 @@ CONNECTED_EMAIL_KEY = "gmail_connected_email"
 LAST_SYNC_KEY = "gmail_last_sync"
 ANALYSIS_KEY = "gmail_mail_analysis"
 OPPORTUNITY_ACTIONS_KEY = "gmail_opportunity_actions"
+OPPORTUNITY_UNVERIFIED_KEY = "gmail_opportunity_unverified"
 UNLISTED_KEY = "gmail_unlisted_applications"
 UNLISTED_ACTIONS_KEY = "gmail_unlisted_actions"
 
@@ -587,12 +588,17 @@ def _refine_fields_from_description(fields: dict, description: str) -> dict:
         refined = job_extract.extract_fields(description)
     except Exception:
         return fields
-    return {
+    merged = {
         "company": refined["company"] or fields["company"],
         "title": refined["title"] or fields["title"],
         "location": refined["location"] or fields["location"],
         "salary": refined["salary"] or fields["salary"],
     }
+    # Re-check against the full posting text rather than keeping either
+    # source's own "unverified" list - a value kept from the subject/snippet
+    # guess still needs checking against this better, fuller source.
+    merged["unverified"] = job_extract.unverified_fields(merged, description)
+    return merged
 
 
 def _add_opportunity_as_saved(msg: dict) -> tuple[str, bool]:
@@ -653,6 +659,8 @@ def _add_opportunity_as_saved(msg: dict) -> tuple[str, bool]:
     })
     storage.save_saved(records)
     st.session_state.setdefault(OPPORTUNITY_ACTIONS_KEY, {})[msg["id"]] = "added"
+    if fields.get("unverified"):
+        st.session_state.setdefault(OPPORTUNITY_UNVERIFIED_KEY, {})[msg["id"]] = fields["unverified"]
     return fields["company"], True
 
 
@@ -699,7 +707,14 @@ def _render_opportunity(msg: dict) -> None:
     _render_message(msg)
     action = st.session_state.get(OPPORTUNITY_ACTIONS_KEY, {}).get(msg["id"])
     if action == "added":
-        st.caption("Added to Saved Positions.")
+        unverified = st.session_state.get(OPPORTUNITY_UNVERIFIED_KEY, {}).get(msg["id"])
+        if unverified:
+            st.caption(
+                f"Added to Saved Positions - couldn't verify {', '.join(unverified)} against "
+                "the source text; worth a second look."
+            )
+        else:
+            st.caption("Added to Saved Positions.")
         return
     if action == "skipped":
         st.caption("Already tracked in Saved or Applied Positions - not added again.")
@@ -766,7 +781,13 @@ def _render_unlisted_application(item: dict) -> None:
     _render_message(msg)
     action = st.session_state.get(UNLISTED_ACTIONS_KEY, {}).get(msg["id"])
     if action == "added":
-        st.caption(f"Added to Applied Positions as {fields['company']}.")
+        if fields.get("unverified"):
+            st.caption(
+                f"Added to Applied Positions as {fields['company']} - couldn't verify "
+                f"{', '.join(fields['unverified'])} against the source text; worth a second look."
+            )
+        else:
+            st.caption(f"Added to Applied Positions as {fields['company']}.")
         return
     if action == "dismissed":
         st.caption("Dismissed.")

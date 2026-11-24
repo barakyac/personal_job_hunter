@@ -997,6 +997,25 @@ def test_adding_opportunity_creates_saved_position_and_marks_added(monkeypatch):
     assert any("Added to Saved Positions" in c.value for c in at.caption)
 
 
+def test_adding_opportunity_shows_caption_when_a_field_is_unverified(monkeypatch):
+    _connect_with_one_opportunity(monkeypatch)
+
+    monkeypatch.setattr(
+        job_extract,
+        "extract_opportunity_fields",
+        lambda subject, snippet, model=job_extract.DEFAULT_MODEL: {
+            "company": "Acme", "title": "Backend Engineer", "location": "Remote", "salary": "",
+            "unverified": ["location"],
+        },
+    )
+
+    at = AppTest.from_function(_render_mail).run()
+    at = at.button(key="add_opportunity_opp-1").click().run()
+
+    assert not at.exception
+    assert any("couldn't verify" in c.value.lower() and "location" in c.value for c in at.caption)
+
+
 def test_adding_opportunity_fetches_link_from_message_body(monkeypatch):
     _connect_with_one_opportunity(monkeypatch)
 
@@ -1419,6 +1438,30 @@ def test_save_all_adds_every_pending_opportunity(monkeypatch):
     assert not any(b.key == "add_opportunity_opp-1" for b in at.button)
     assert not any(b.key == "add_opportunity_opp-2" for b in at.button)
     assert not any(b.key == "add_all_opportunities_btn" for b in at.button)
+
+
+def test_save_all_flags_unverified_fields_per_opportunity(monkeypatch):
+    _connect_with_two_opportunities(monkeypatch)
+
+    monkeypatch.setattr(
+        job_extract,
+        "extract_opportunity_fields",
+        lambda subject, snippet, model=job_extract.DEFAULT_MODEL: {
+            "company": "Acme" if "Acme" in subject else "Globex",
+            "title": "Engineer",
+            "location": "Nowhere",
+            "salary": "",
+            "unverified": ["location"],
+        },
+    )
+
+    at = AppTest.from_function(_render_mail).run()
+    at = at.button(key="add_all_opportunities_btn").click().run()
+
+    assert not at.exception
+    flagged = [c.value for c in at.caption if "couldn't verify" in c.value.lower()]
+    assert len(flagged) == 2
+    assert all("location" in c for c in flagged)
 
 
 def test_save_all_skips_already_handled_opportunities(monkeypatch):

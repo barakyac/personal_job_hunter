@@ -5,6 +5,10 @@ import requests
 OLLAMA_URL = "http://localhost:11434/api/chat"
 DEFAULT_MODEL = "qwen3.5:9b"
 
+# Qwen3.5's own recommended sampling settings for non-thinking mode (think=False
+# below) - without these, calls fall back to Ollama's generic defaults instead.
+NON_THINKING_OPTIONS = {"temperature": 0.7, "top_p": 0.8, "top_k": 20}
+
 
 class OllamaError(Exception):
     pass
@@ -41,6 +45,7 @@ def chat_json(system: str, user: str, model: str = DEFAULT_MODEL, timeout: int =
             # timeouts on larger prompts like fit scoring. Turning it off
             # dropped a trivial call from ~9s to ~0.2s locally.
             "think": False,
+            "options": NON_THINKING_OPTIONS,
         },
         timeout,
     )
@@ -61,6 +66,7 @@ def chat(messages: list[dict], model: str = DEFAULT_MODEL, timeout: int = 300) -
             "stream": False,
             "keep_alive": "30m",
             "think": False,
+            "options": NON_THINKING_OPTIONS,
         },
         timeout,
     )
