@@ -103,12 +103,16 @@ def passes_profile_filters(candidate: dict, profile: dict) -> bool:
 
 
 def add_candidates(candidates: list[dict], source: str, profile: dict | None = None) -> dict:
-    """Append new candidates to matched_jobs.json. Returns counts:
-    {"added": n, "already_tracked": n, "filtered": n, "invalid": n}.
-    A candidate needs at least a company or a link to be kept."""
+    """Append new candidates to matched_jobs.json, then immediately fit-score
+    whichever of them don't already carry a score, so a match never sits
+    unscored just because no one has clicked "Score fit" yet. Returns
+    counts: {"added": n, "already_tracked": n, "filtered": n, "invalid": n,
+    "score_errors": [...]}. A candidate needs at least a company or a link
+    to be kept."""
     profile = profile if profile is not None else storage.load_match_profile()
     matched = storage.load_matched()
-    counts = {"added": 0, "already_tracked": 0, "filtered": 0, "invalid": 0}
+    counts = {"added": 0, "already_tracked": 0, "filtered": 0, "invalid": 0, "score_errors": []}
+    added_records = []
     for raw in candidates:
         if not (raw.get("company") or "").strip() and not (raw.get("link") or "").strip():
             counts["invalid"] += 1
@@ -119,10 +123,15 @@ def add_candidates(candidates: list[dict], source: str, profile: dict | None = N
         if not passes_profile_filters(raw, profile):
             counts["filtered"] += 1
             continue
-        matched.append(_clean_candidate(raw, source))
+        record = _clean_candidate(raw, source)
+        matched.append(record)
+        added_records.append(record)
         counts["added"] += 1
     if counts["added"]:
         storage.save_matched(matched)
+        unscored = [r for r in added_records if r.get("fit_score") in (None, "")]
+        if unscored:
+            counts["score_errors"] = score_matches(unscored)
     return counts
 
 

@@ -64,9 +64,11 @@ filters and fit scoring.
    python scripts/add_match.py --source linkedin --json data/agent/matches_linkedin.json
    python scripts/add_match.py --source google   --json data/agent/matches_google.json
    ```
-9. **Report** how many were added or skipped. Tell the user they can open the
-   Matching Jobs page to "Score fit" (local Ollama) and save the ones they
-   like to Saved Jobs.
+9. **Report** how many were added or skipped. `add_match.py` fit-scores each
+   new match against the resume automatically (local Ollama) before it
+   returns, so there's no separate "Score fit" step needed - tell the user
+   they can open the Matching Jobs page and save the ones they like to
+   Saved Jobs.
 
 ## Re-checking postings already tracked
 

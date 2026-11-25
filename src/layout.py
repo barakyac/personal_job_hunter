@@ -63,19 +63,52 @@ div.st-key-top_nav {
     background: #171a23;
     border-bottom: 1px solid rgba(255,255,255,0.08);
     padding: 0.5rem 1.75rem;
+    min-height: 3.1rem;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    overflow-x: auto;
+}
+/* The logo/nav-tabs/actions row itself: every column hugs its own content
+(logo, one nav button, Ask Assistant, Settings) instead of Streamlit's
+ratio-based fixed widths, which could squeeze "Ask Assistant"/Settings
+narrower than their label at smaller viewport widths and clip them. Only
+the spacer column (.top_nav_spacer, between the last nav tab and Ask
+Assistant) is allowed to grow, absorbing the remaining width so the
+right-hand actions stay flush right. */
+div.st-key-top_nav [data-testid="stHorizontalBlock"] {
+    flex-wrap: nowrap;
+    align-items: center;
+    width: 100%;
+}
+div.st-key-top_nav [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+    flex: 0 0 auto !important;
+    width: auto !important;
+    min-width: 0 !important;
+}
+div.st-key-top_nav [data-testid="stColumn"]:has(div.st-key-top_nav_spacer) {
+    flex: 1 1 auto !important;
 }
 div.st-key-top_nav div[data-testid="stButton"] button {
     border: none;
     background: transparent;
     font-weight: 500;
+    padding: 0.3rem 0.85rem;
+    min-height: 2.1rem;
+    white-space: nowrap;
 }
+/* Compact active-state: a tinted pill sized to the label, not a block
+filling the whole (now-narrower) nav column. */
 div.st-key-top_nav div[data-testid="stButton"] button[kind="primary"] {
-    background: var(--primary-color, #5b5fc7);
+    background: rgba(91,95,199,0.22);
+    color: #c7c9f7;
+    border-radius: 999px;
+    font-weight: 600;
 }
 .jh-logo {
     font-weight: 700;
     font-size: 1.05rem;
-    line-height: 2.25rem;
+    line-height: 2.1rem;
     white-space: nowrap;
 }
 /* Page title scale, per design spec (~28-32px). */
@@ -202,6 +235,82 @@ div.st-key-assistant_panel {
     div.st-key-assistant_panel { width: 100vw; max-width: 100vw; }
     .block-container { padding-left: 1rem; padding-right: 1rem; }
 }
+/* Matching Jobs page: container, toolbar and card styling, scoped to this
+page's own container/card keys so Applications/Saved Jobs (which use the
+plain jh-card-/jh-click- keys above) are unaffected. */
+div.st-key-matches_page {
+    max-width: 1400px;
+    margin: 0 auto;
+}
+/* Tighter default gap between this page's own top-level sections (header,
+profile editor, toolbar, each card) than Streamlit's ~1rem default - the
+card's own internal gap below is pinned to a slightly larger value via
+!important so this broader rule can never loosen it, regardless of
+selector order. */
+div.st-key-matches_page div[data-testid="stVerticalBlock"] {
+    gap: 0.5rem;
+}
+div.st-key-matches_toolbar [data-testid="stHorizontalBlock"] {
+    flex-wrap: wrap;
+    row-gap: 10px;
+}
+div.st-key-matches_toolbar div[data-baseweb="select"],
+div.st-key-matches_toolbar div[data-testid="stNumberInput"] input,
+div.st-key-matches_toolbar div[role="radiogroup"] button {
+    min-height: 2.25rem;
+}
+/* Card surface: background/radius plus a deliberately tight padding
+override (Streamlit's bordered-container default is far more generous)
+so a collapsed card lands in the ~140-170px band, not ~230px+. */
+div[class*="st-key-jh-match-card-"] {
+    background: #1b1e29;
+    border-radius: 11px;
+    padding: 10px 14px !important;
+}
+div[class*="st-key-jh-match-card-"] div[data-testid="stVerticalBlock"] {
+    gap: 8px !important;
+}
+/* One consistent 10px gap for the whole card row - between the icon and
+the title/meta block, and between each action button - instead of
+Streamlit's wider default "small" gap, so the icon sits directly beside
+the job info and the action buttons cluster together (8-12px apart)
+rather than spreading evenly across the card. */
+div[class*="st-key-jh-match-row-"] [data-testid="stHorizontalBlock"] {
+    gap: 10px !important;
+}
+.jh-match-title {
+    font-size: 0.98rem;
+    font-weight: 600;
+    line-height: 1.3;
+    margin-bottom: 2px;
+}
+.jh-match-meta {
+    font-size: 0.78rem;
+    line-height: 1.3;
+    color: rgba(255,255,255,0.58);
+}
+.jh-match-company {
+    color: rgba(255,255,255,0.85);
+    font-weight: 600;
+}
+/* Clickable fit-score "badge": a button styled to look like the old
+static badge (compact, bordered, color-coded by tier) instead of Streamlit's
+default button chrome/min-height - one rule per tier, selected by which
+container key wraps the button (see _fit_tier in matches_view.py). */
+div[class*="st-key-jh-match-score-"] button {
+    font-size: 1.05rem;
+    font-weight: 700;
+    line-height: 1;
+    padding: 0.15rem 0.5rem;
+    border-radius: 8px;
+    border-width: 1px;
+    border-style: solid;
+    background: transparent;
+    min-height: unset !important;
+}
+div[class*="st-key-jh-match-score-good-"] button { color: #5fd98a; border-color: #5fd98a; }
+div[class*="st-key-jh-match-score-ok-"] button { color: #e8c468; border-color: #e8c468; }
+div[class*="st-key-jh-match-score-low-"] button { color: #9aa0b4; border-color: #9aa0b4; }
 </style>
 """
 
@@ -263,8 +372,14 @@ def _settings_dialog() -> None:
 
 def render_top_nav(current_page: str) -> None:
     with st.container(key="top_nav"):
+        # Column ratios here are only a fallback for before the CSS above
+        # loads - that CSS overrides every column to hug its own content
+        # except the spacer (cols[len(NAV_PAGES) + 1]), which is the only
+        # one allowed to grow, so the logo/nav tabs stay grouped on the
+        # left and Ask Assistant/Settings stay flush right, fully visible,
+        # regardless of viewport width.
         cols = st.columns(
-            [1.4] + [1] * len(NAV_PAGES) + [0.1, 1.3, 0.55], gap="small", vertical_alignment="center"
+            [1.3] + [0.72] * len(NAV_PAGES) + [4, 1.1, 0.5], gap="small", vertical_alignment="center"
         )
         with cols[0]:
             st.markdown('<div class="jh-logo">🧭 Job Hunter</div>', unsafe_allow_html=True)
@@ -274,10 +389,11 @@ def render_top_nav(current_page: str) -> None:
                     page,
                     key=f"nav_{page}",
                     type="primary" if page == current_page else "secondary",
-                    use_container_width=True,
                     on_click=_set_page,
                     args=(page,),
                 )
+        with cols[len(NAV_PAGES) + 1]:
+            st.container(key="top_nav_spacer")
         with cols[len(NAV_PAGES) + 2]:
             st.button(
                 "Ask Assistant",

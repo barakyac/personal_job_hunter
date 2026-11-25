@@ -37,13 +37,45 @@ def test_empty_link_stays_empty():
 # --- add_candidates --------------------------------------------------------
 
 def test_add_candidates_appends_new_with_defaults():
+    # No resume is configured in this test, so the auto-score pass that
+    # add_candidates now runs on every newly added, not-yet-scored match
+    # short-circuits with this one message instead of calling Ollama.
     counts = job_matching.add_candidates([_job()], storage.MATCH_SOURCE_GOOGLE)
-    assert counts == {"added": 1, "already_tracked": 0, "filtered": 0, "invalid": 0}
+    assert counts == {
+        "added": 1, "already_tracked": 0, "filtered": 0, "invalid": 0,
+        "score_errors": ["Add your resume on the Profile page first - fit is scored against it."],
+    }
     [record] = storage.load_matched()
     assert record["source"] == storage.MATCH_SOURCE_GOOGLE
     assert record["match_status"] == storage.MATCH_STATUS_NEW
     assert record["date_found"]
     assert set(storage.MATCHED_COLUMNS) <= set(record)
+
+
+def test_add_candidates_auto_scores_new_matches_against_the_resume(monkeypatch):
+    storage.save_resume("Experienced backend engineer.")
+    monkeypatch.setattr(
+        fit_analysis, "analyze", lambda resume, job, model=None: {"fit_score": 8, "fit_notes": "Great fit."}
+    )
+    counts = job_matching.add_candidates([_job()], "src")
+    assert counts["score_errors"] == []
+    [record] = storage.load_matched()
+    assert record["fit_score"] == 8
+    assert record["fit_notes"] == "Great fit."
+
+
+def test_add_candidates_does_not_rescore_a_candidate_that_already_has_a_fit_score(monkeypatch):
+    storage.save_resume("Experienced backend engineer.")
+    analyze_calls = []
+    monkeypatch.setattr(
+        fit_analysis, "analyze",
+        lambda resume, job, model=None: analyze_calls.append(job) or {"fit_score": 1, "fit_notes": "x"},
+    )
+    job_matching.add_candidates([_job(fit_score=9, fit_notes="pre-scored")], "src")
+    assert analyze_calls == []
+    [record] = storage.load_matched()
+    assert record["fit_score"] == 9
+    assert record["fit_notes"] == "pre-scored"
 
 
 def test_add_candidates_skips_duplicates_within_matches_by_link_shape():
@@ -207,14 +239,19 @@ def test_mark_status_from_reality_is_false_when_not_tracked_anywhere():
 
 def test_score_matches_writes_scores_and_reports_errors(monkeypatch):
     storage.save_resume("Backend engineer, Python")
-    job_matching.add_candidates([_job(), _job(company="Broken", link="https://b.example")], "src")
 
     def fake_analyze(resume, job, model=None):
         if job["company"] == "Broken":
             raise ollama_client.OllamaError("down")
         return {"fit_score": 9, "fit_notes": "strong"}
 
+    # Patched before add_candidates, not after - add_candidates now
+    # auto-scores every new, not-yet-scored match itself, so this fake
+    # needs to be in place for that first pass too, not just the explicit
+    # score_matches call below.
     monkeypatch.setattr(fit_analysis, "analyze", fake_analyze)
+    job_matching.add_candidates([_job(), _job(company="Broken", link="https://b.example")], "src")
+
     errors = job_matching.score_matches(storage.load_matched())
     assert errors == ["Broken: down"]
     scores = {r["company"]: r["fit_score"] for r in storage.load_matched()}
