@@ -35,24 +35,73 @@ div[data-testid="stDialog"] div[class*="st-key-call_notes_"] textarea {
 """
 
 
-def _save_call_notes(index: int, call_notes: str) -> None:
+def _save_call_details(index: int, call_date: date, new_notes: str, full_history: str) -> None:
+    """Single combined save for the Call details dialog. The dialog used to
+    split this into two buttons - "Log a new call" (prepend a dated entry)
+    and "Save call notes" (save the free-edit box) - which meant filling in
+    both the "What happened" box and hand-editing Full history in the same
+    sitting needed two separate clicks, and it was easy to click only one
+    and lose the other edit. One button now does both: if "What happened"
+    has text, it's prepended as a new dated entry on top of `full_history`
+    (not what's on disk) - using the box's current, possibly hand-edited
+    text as the base, same string field (so the Table view and existing
+    records need no migration).
+
+    Also pushes the result into the "Full history" text_area's own
+    session_state key, and clears the "What happened" box's. Once a
+    text_area's key is already in session_state, Streamlit ignores the
+    `value=` it's rendered with on every later rerun - without this, the
+    Full history box would keep showing whatever it last displayed, out of
+    sync with the entry just saved, and a later click would silently
+    overwrite it with that stale text."""
     applied = storage.load_applied()
-    applied[index]["call_notes"] = call_notes
+    base = (full_history or "").strip()
+    if new_notes.strip():
+        entry = f"### {call_date.isoformat()}\n{new_notes.strip()}"
+        updated = f"{entry}\n\n{base}" if base else entry
+    else:
+        updated = base
+    applied[index]["call_notes"] = updated
     storage.save_applied(applied)
+    st.session_state[f"call_notes_{index}"] = updated
+    st.session_state[f"new_call_notes_{index}"] = ""
 
 
-def _add_call_entry(index: int, call_date: date, notes: str) -> None:
-    """Prepends a new dated entry to call_notes instead of overwriting it -
-    the only way this dialog used to let you record a call was the single
-    free-edit box below, which meant a second call replaced the first one
-    unless you manually kept both in your head. Same string field (so the
-    Table view and existing records need no migration), just appended to
-    rather than replaced."""
+@st.fragment
+def _call_notes_editor(index: int) -> None:
+    """The notes half of the Call details dialog, scoped to its own
+    fragment so Save only reruns this piece - not the whole dialog. A plain
+    `st.rerun()` here (needed so the Full history box visibly shows the
+    merged text after a save - see _save_call_details) reruns the entire
+    script, which is also how Streamlit closes an st.dialog, taking the
+    Assistant/Job description panel in chat_col down with it even though
+    neither has anything to do with saving a note. `st.rerun(scope=
+    "fragment")` reruns only this fragment, so the dialog stays open and
+    chat_col is left alone."""
     applied = storage.load_applied()
-    existing = (applied[index].get("call_notes") or "").strip()
-    entry = f"### {call_date.isoformat()}\n{notes.strip()}"
-    applied[index]["call_notes"] = f"{entry}\n\n{existing}" if existing else entry
-    storage.save_applied(applied)
+    record = applied[index]
+
+    add_date_col, add_notes_col = st.columns([1, 3])
+    with add_date_col:
+        new_call_date = st.date_input("Date", value=date.today(), key=f"new_call_date_{index}")
+    with add_notes_col:
+        new_call_notes = st.text_area(
+            "What happened", key=f"new_call_notes_{index}", height=68,
+            label_visibility="collapsed", placeholder="What happened on this call? (optional)",
+        )
+
+    st.divider()
+    st.caption("Full history (edit directly if needed)")
+    call_notes = st.text_area(
+        "Call details",
+        value=record.get("call_notes", ""),
+        height=350,
+        key=f"call_notes_{index}",
+        label_visibility="collapsed",
+    )
+    if st.button("Save", key=f"save_call_details_{index}", type="primary", use_container_width=True):
+        _save_call_details(index, new_call_date, new_call_notes, call_notes)
+        st.rerun(scope="fragment")
 
 
 @st.dialog("Call details", width="large")
@@ -63,33 +112,7 @@ def _call_notes_dialog(index: int) -> None:
     notes_col, chat_col = st.columns([2, 1], gap="large")
 
     with notes_col:
-        add_date_col, add_notes_col = st.columns([1, 3])
-        with add_date_col:
-            new_call_date = st.date_input("Date", value=date.today(), key=f"new_call_date_{index}")
-        with add_notes_col:
-            new_call_notes = st.text_area(
-                "What happened", key=f"new_call_notes_{index}", height=68,
-                label_visibility="collapsed", placeholder="What happened on this call?",
-            )
-        if st.button("Log a new call", key=f"add_call_btn_{index}", type="primary", use_container_width=True):
-            if new_call_notes.strip():
-                _add_call_entry(index, new_call_date, new_call_notes)
-                st.rerun()
-            else:
-                st.error("Enter what happened on the call before adding it.")
-
-        st.divider()
-        st.caption("Full history (edit directly if needed)")
-        call_notes = st.text_area(
-            "Call details",
-            value=record.get("call_notes", ""),
-            height=350,
-            key=f"call_notes_{index}",
-            label_visibility="collapsed",
-        )
-        if st.button("Save call notes", key=f"save_call_notes_{index}"):
-            _save_call_notes(index, call_notes)
-            st.rerun()
+        _call_notes_editor(index)
 
     with chat_col:
         panel = st.segmented_control(

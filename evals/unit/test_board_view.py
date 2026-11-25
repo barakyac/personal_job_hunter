@@ -114,10 +114,10 @@ def test_in_a_call_dialog_opens_with_existing_notes_prefilled():
 
     assert not at.exception
     assert at.text_area(key="call_notes_0").value == "Earlier note."
-    assert at.button(key="save_call_notes_0") is not None
+    assert at.button(key="save_call_details_0") is not None
 
 
-def test_save_call_notes_updates_the_right_record():
+def test_save_call_details_updates_the_right_record():
     # The dialog's own click-to-save round trip can't be driven through
     # AppTest: a widget interaction inside an already-open st.dialog doesn't
     # re-trigger its handler on a later .run() (AppTest doesn't simulate the
@@ -132,23 +132,26 @@ def test_save_call_notes_updates_the_right_record():
         ]
     )
 
-    board_view._save_call_notes(1, "Spoke with the recruiter, next step is a tech screen.")
+    board_view._save_call_details(1, date.today(), "", "Spoke with the recruiter, next step is a tech screen.")
 
     records = storage.load_applied()
     assert "call_notes" not in records[0]
     assert records[1]["call_notes"] == "Spoke with the recruiter, next step is a tech screen."
 
 
-def test_add_call_entry_prepends_instead_of_overwriting():
+def test_save_call_details_prepends_new_entry_onto_full_history():
     # Same AppTest limitation as above - exercise the plain function the
-    # "Add call" button calls directly.
+    # single "Save" button calls directly.
     from src import board_view
 
     storage.save_applied(
         [{"company": "Acme", "title": "Backend", "status": "Applied", "call_notes": "### 2026-11-01\nFirst screen, went well."}]
     )
 
-    board_view._add_call_entry(0, date(2026, 11, 15), "Second call, got a take-home assignment.")
+    board_view._save_call_details(
+        0, date(2026, 11, 15), "Second call, got a take-home assignment.",
+        "### 2026-11-01\nFirst screen, went well.",
+    )
 
     records = storage.load_applied()
     assert records[0]["call_notes"] == (
@@ -157,15 +160,94 @@ def test_add_call_entry_prepends_instead_of_overwriting():
     )
 
 
-def test_add_call_entry_on_a_record_with_no_prior_notes():
+def test_save_call_details_on_a_record_with_no_prior_notes():
     from src import board_view
 
     storage.save_applied([{"company": "Acme", "title": "Backend", "status": "Applied"}])
 
-    board_view._add_call_entry(0, date(2026, 11, 15), "Quick intro call.")
+    board_view._save_call_details(0, date(2026, 11, 15), "Quick intro call.", "")
 
     records = storage.load_applied()
     assert records[0]["call_notes"] == "### 2026-11-15\nQuick intro call."
+
+
+def test_save_call_details_prepends_onto_a_hand_edit_not_yet_saved_to_disk():
+    # Regression guard: the combined Save button must use the Full history
+    # box's current (possibly just hand-edited) text as the base for the new
+    # entry, not whatever's still on disk - otherwise typing a correction
+    # into Full history and logging a new call in the same visit would
+    # silently discard that correction.
+    from src import board_view
+
+    storage.save_applied(
+        [{"company": "Acme", "title": "Backend", "status": "Applied", "call_notes": "### 2026-11-01\nFirst screen, went well."}]
+    )
+
+    board_view._save_call_details(
+        0, date(2026, 11, 15), "Second call, got a take-home assignment.",
+        "### 2026-11-01\nFirst screen, went well (hand-edited correction).",
+    )
+
+    records = storage.load_applied()
+    assert records[0]["call_notes"] == (
+        "### 2026-11-15\nSecond call, got a take-home assignment.\n\n"
+        "### 2026-11-01\nFirst screen, went well (hand-edited correction)."
+    )
+
+
+def test_save_call_details_syncs_the_open_dialogs_full_history_box():
+    # Regression test: the Full history text_area's session_state key
+    # (call_notes_0) only picks up `value=record.get("call_notes")` the
+    # first time it's rendered in a session - once the dialog has been
+    # opened once, Streamlit ignores that `value=` on every later rerun and
+    # keeps whatever the box last showed. Without _save_call_details pushing
+    # the new text into that session_state key itself, logging a call
+    # during an already-open dialog would leave the box showing the
+    # pre-call text - and a later click would overwrite the just-logged
+    # entry with that stale text.
+    storage.save_applied(
+        [{"company": "Acme", "title": "Backend", "status": "Interview", "call_notes": "### 2026-11-01\nFirst screen, went well."}]
+    )
+
+    def _dialog_with_a_save_flag():
+        # Mirrors the real script order inside _call_notes_dialog: the
+        # "Save" button's handler (_save_call_details) runs, using the Full
+        # history text_area's current session-state value as the base, then
+        # control reaches that same text_area further down in the same
+        # script - exactly what a real rerun after that button click does,
+        # just without needing to click through AppTest's dialog (which
+        # doesn't replay a dialog's own button handlers - see the note on
+        # test_save_call_details_updates_the_right_record above).
+        import streamlit as st
+        from datetime import date
+
+        from src import board_view
+
+        if st.session_state.get("do_save"):
+            current_full_history = st.session_state.get(
+                "call_notes_0", "### 2026-11-01\nFirst screen, went well."
+            )
+            board_view._save_call_details(
+                0, date(2026, 11, 15), "Second call, got a take-home assignment.", current_full_history,
+            )
+        board_view._call_notes_dialog(0)
+
+    at = AppTest.from_function(_dialog_with_a_save_flag).run()
+    assert at.text_area(key="call_notes_0").value == "### 2026-11-01\nFirst screen, went well."
+
+    at.session_state["do_save"] = True
+    at.run()
+
+    records = storage.load_applied()
+    assert records[0]["call_notes"] == (
+        "### 2026-11-15\nSecond call, got a take-home assignment.\n\n"
+        "### 2026-11-01\nFirst screen, went well."
+    )
+    # The box the user is looking at must reflect the entry just saved, not
+    # the stale pre-save text - otherwise a later click would overwrite the
+    # file with that stale text.
+    assert at.text_area(key="call_notes_0").value == records[0]["call_notes"]
+    assert at.text_area(key="new_call_notes_0").value == ""
 
 
 def test_card_shows_call_notes_button_that_opens_the_dialog():
