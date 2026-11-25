@@ -17,6 +17,31 @@ def _description_dialog(record: dict) -> None:
     st.write(record.get("description") or "")
 
 
+@st.dialog("Already tracked")
+def _conflict_dialog(record: dict, where: str, intent: str) -> None:
+    """Shown whenever "Save job"/"Add to Applications" is clicked on a
+    match that's already tracked somewhere (Saved or Applied) - save_to_
+    saved_jobs/apply_to_applied_jobs never guess which bucket is right on
+    their own; it's always this dialog's call, left to the user."""
+    bucket = "Saved Jobs" if where == "saved" else "Applied Positions"
+    target = "Saved Jobs" if intent == "save" else "Applied Positions"
+    key = _row_key(record)
+    st.write(
+        f"**{record.get('company') or 'This job'} - {record.get('title') or 'Untitled'}** is already in "
+        f"**{bucket}**."
+    )
+    if st.button(f"Keep it in {bucket} (just fix the label here)", key=f"conflict_sync_{key}",
+                 use_container_width=True):
+        job_matching.mark_status_from_reality(record)
+        st.rerun()
+    if st.button(f"Also add it to {target}", key=f"conflict_force_{key}", use_container_width=True):
+        if intent == "save":
+            job_matching.save_to_saved_jobs(record, force=True)
+        else:
+            job_matching.apply_to_applied_jobs(record, force=True)
+        st.rerun()
+
+
 def _row_key(record: dict) -> str:
     basis = job_matching.canonical_link(record.get("link", "")) or "|".join(job_matching._identity(record))
     return hashlib.md5(basis.encode("utf-8")).hexdigest()[:12]
@@ -177,19 +202,23 @@ def _render_row(record: dict) -> None:
             elif status == storage.MATCH_STATUS_APPLIED:
                 st.caption("In Applied Positions")
             elif st.button("Save job", key=f"match_save_{key}", type="primary"):
-                if job_matching.save_to_saved_jobs(record):
-                    st.toast(f"Saved {record.get('company') or 'job'} to Saved Jobs.")
+                conflict = job_matching.tracked_elsewhere(record)
+                if conflict:
+                    _conflict_dialog(record, conflict, "save")
                 else:
-                    st.toast("Already in Saved Jobs or Applied.")
-                st.rerun()
+                    job_matching.save_to_saved_jobs(record)
+                    st.toast(f"Saved {record.get('company') or 'job'} to Saved Jobs.")
+                    st.rerun()
         with apply_col:
             if status == storage.MATCH_STATUS_NEW:
                 if st.button("Add to Applications", key=f"match_apply_{key}"):
-                    if job_matching.apply_to_applied_jobs(record):
-                        st.toast(f"Added {record.get('company') or 'job'} to Applied Positions.")
+                    conflict = job_matching.tracked_elsewhere(record)
+                    if conflict:
+                        _conflict_dialog(record, conflict, "apply")
                     else:
-                        st.toast("Already in Saved Jobs or Applied.")
-                    st.rerun()
+                        job_matching.apply_to_applied_jobs(record)
+                        st.toast(f"Added {record.get('company') or 'job'} to Applied Positions.")
+                        st.rerun()
         with dismiss_col:
             if status == storage.MATCH_STATUS_DISMISSED:
                 if st.button("Restore", key=f"match_restore_{key}"):

@@ -148,11 +148,27 @@ def set_status(record: dict, status: str) -> bool:
     return True
 
 
-def save_to_saved_jobs(record: dict) -> bool:
-    """Copy a match into Saved Jobs (keeping its description and fit
-    score, so "Calculate fit" there doesn't redo the work) and mark the
-    match Saved. Returns False, writing nothing to Saved Jobs, when the
-    posting is already in Saved or Applied."""
+def tracked_elsewhere(record: dict) -> str | None:
+    """Where this match is already tracked - "saved" or "applied" - or None
+    if it isn't tracked anywhere yet. The view checks this before calling
+    save_to_saved_jobs/apply_to_applied_jobs, so it can put the choice to
+    the user (via a dialog) instead of those functions silently deciding
+    anything on their own."""
+    records = storage.load_matched()
+    idx = _find_index(records, record)
+    if idx is None:
+        return None
+    match = records[idx]
+    others = [r for i, r in enumerate(records) if i != idx]
+    where = find_tracked(match, matched=others)
+    return where if where in ("saved", "applied") else None
+
+
+def mark_status_from_reality(record: dict) -> bool:
+    """Correct a match's status tag to reflect where it's actually already
+    tracked (Saved or Applied), without copying or duplicating anything.
+    This is the "keep it where it is" choice when the user resolves a
+    tracked_elsewhere conflict."""
     records = storage.load_matched()
     idx = _find_index(records, record)
     if idx is None:
@@ -160,9 +176,29 @@ def save_to_saved_jobs(record: dict) -> bool:
     match = records[idx]
     others = [r for i, r in enumerate(records) if i != idx]
     where = find_tracked(match, matched=others)
-    if where in ("saved", "applied"):
-        records[idx]["match_status"] = storage.MATCH_STATUS_SAVED
-        storage.save_matched(records)
+    if where not in ("saved", "applied"):
+        return False
+    records[idx]["match_status"] = storage.MATCH_STATUS_SAVED if where == "saved" else storage.MATCH_STATUS_APPLIED
+    storage.save_matched(records)
+    return True
+
+
+def save_to_saved_jobs(record: dict, force: bool = False) -> bool:
+    """Copy a match into Saved Jobs (keeping its description and fit
+    score, so "Calculate fit" there doesn't redo the work) and mark the
+    match Saved. Writes and changes nothing, returning False, when the
+    posting is already tracked (Saved or Applied) and `force` isn't set -
+    the caller must have checked tracked_elsewhere() first and let the
+    user decide, via mark_status_from_reality() or force=True, rather than
+    this guessing on its own."""
+    records = storage.load_matched()
+    idx = _find_index(records, record)
+    if idx is None:
+        return False
+    match = records[idx]
+    others = [r for i, r in enumerate(records) if i != idx]
+    where = find_tracked(match, matched=others)
+    if where in ("saved", "applied") and not force:
         return False
 
     saved = storage.load_saved()
@@ -188,11 +224,13 @@ def save_to_saved_jobs(record: dict) -> bool:
     return True
 
 
-def apply_to_applied_jobs(record: dict) -> bool:
+def apply_to_applied_jobs(record: dict, force: bool = False) -> bool:
     """Copy a match straight into Applied Positions - skipping Saved Jobs -
     for when the user already applied to this posting outside the app, and
-    mark the match Applied. Returns False, writing nothing, when the
-    posting is already tracked in Saved or Applied."""
+    mark the match Applied. Writes and changes nothing, returning False,
+    when the posting is already tracked (Saved or Applied) and `force`
+    isn't set - see save_to_saved_jobs for why this doesn't guess on its
+    own which bucket is right."""
     records = storage.load_matched()
     idx = _find_index(records, record)
     if idx is None:
@@ -200,9 +238,7 @@ def apply_to_applied_jobs(record: dict) -> bool:
     match = records[idx]
     others = [r for i, r in enumerate(records) if i != idx]
     where = find_tracked(match, matched=others)
-    if where in ("saved", "applied"):
-        records[idx]["match_status"] = storage.MATCH_STATUS_APPLIED
-        storage.save_matched(records)
+    if where in ("saved", "applied") and not force:
         return False
 
     applied = storage.load_applied()

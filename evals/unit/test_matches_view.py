@@ -74,6 +74,60 @@ def test_apply_button_moves_match_to_applied_positions():
     assert [r["company"] for r in storage.load_applied()] == ["High"]
 
 
+def test_save_button_opens_a_conflict_dialog_even_for_the_same_bucket():
+    # "High" is already in Saved Jobs outside the Matching Jobs flow (same
+    # bucket as the button just clicked). save_to_saved_jobs still must not
+    # decide anything on its own - the dialog always gets the call.
+    _seed()
+    storage.save_saved([{"company": "High", "title": "Backend", "link": "https://high.example"}])
+
+    at = AppTest.from_function(_render).run()
+    save_btn = next(b for b in at.button if b.key and b.key.startswith("match_save_"))
+    at = save_btn.click().run()
+
+    assert not at.exception
+    assert len(storage.load_saved()) == 1
+    assert any("already in" in m.value and "Saved Jobs" in m.value for m in at.markdown)
+    assert [r["match_status"] for r in storage.load_matched() if r["company"] == "High"] == [
+        storage.MATCH_STATUS_NEW
+    ]
+
+
+def test_save_button_opens_a_conflict_dialog_instead_of_mislabeling_an_applied_match():
+    # "High" is already in Applied Positions outside the Matching Jobs
+    # flow; clicking "Save job" must not silently relabel it as merely
+    # Saved (see job_matching.save_to_saved_jobs) - it should ask.
+    _seed()
+    storage.save_applied([{"company": "High", "title": "Backend", "link": "https://high.example"}])
+
+    at = AppTest.from_function(_render).run()
+    save_btn = next(b for b in at.button if b.key and b.key.startswith("match_save_"))
+    at = save_btn.click().run()
+
+    assert not at.exception
+    assert storage.load_saved() == []
+    assert any("already in" in m.value and "Applied Positions" in m.value for m in at.markdown)
+    assert [r["match_status"] for r in storage.load_matched() if r["company"] == "High"] == [
+        storage.MATCH_STATUS_NEW
+    ]
+
+
+def test_apply_button_opens_a_conflict_dialog_instead_of_mislabeling_a_saved_match():
+    _seed()
+    storage.save_saved([{"company": "High", "title": "Backend", "link": "https://high.example"}])
+
+    at = AppTest.from_function(_render).run()
+    apply_btn = next(b for b in at.button if b.key and b.key.startswith("match_apply_"))
+    at = apply_btn.click().run()
+
+    assert not at.exception
+    assert storage.load_applied() == []
+    assert any("already in" in m.value and "Saved Jobs" in m.value for m in at.markdown)
+    assert [r["match_status"] for r in storage.load_matched() if r["company"] == "High"] == [
+        storage.MATCH_STATUS_NEW
+    ]
+
+
 def test_dismiss_button_hides_match():
     _seed()
     at = AppTest.from_function(_render).run()

@@ -111,11 +111,13 @@ def test_save_to_saved_jobs_copies_and_marks_saved():
 
 
 def test_save_to_saved_jobs_does_not_duplicate_an_existing_saved_job():
+    # Doesn't duplicate into Saved Jobs, and doesn't touch the status tag
+    # either - that's mark_status_from_reality's job, left to the caller.
     job_matching.add_candidates([_job()], "src")
     storage.save_saved([{"company": "Acme", "title": "Backend Engineer", "link": "https://acme.example/jobs/1"}])
     assert job_matching.save_to_saved_jobs(_job()) is False
     assert len(storage.load_saved()) == 1
-    assert storage.load_matched()[0]["match_status"] == storage.MATCH_STATUS_SAVED
+    assert storage.load_matched()[0]["match_status"] == storage.MATCH_STATUS_NEW
 
 
 def test_apply_to_applied_jobs_copies_and_marks_applied():
@@ -137,7 +139,68 @@ def test_apply_to_applied_jobs_does_not_duplicate_an_existing_applied_job():
     storage.save_applied([{"company": "Acme", "title": "Backend Engineer", "link": "https://acme.example/jobs/1"}])
     assert job_matching.apply_to_applied_jobs(_job()) is False
     assert len(storage.load_applied()) == 1
+    assert storage.load_matched()[0]["match_status"] == storage.MATCH_STATUS_NEW
+
+
+# --- cross-bucket conflicts (Saved vs Applied) ------------------------------
+
+def test_tracked_elsewhere_reports_the_other_bucket():
+    job_matching.add_candidates([_job()], "src")
+    storage.save_applied([{"company": "Acme", "title": "Backend Engineer", "link": "https://acme.example/jobs/1"}])
+    assert job_matching.tracked_elsewhere(_job()) == "applied"
+
+
+def test_tracked_elsewhere_is_none_when_not_tracked_anywhere():
+    job_matching.add_candidates([_job()], "src")
+    assert job_matching.tracked_elsewhere(_job()) is None
+
+
+def test_save_to_saved_jobs_does_not_copy_or_relabel_when_already_applied():
+    job_matching.add_candidates([_job()], "src")
+    storage.save_applied([{"company": "Acme", "title": "Backend Engineer", "link": "https://acme.example/jobs/1"}])
+    assert job_matching.save_to_saved_jobs(_job()) is False
+    assert storage.load_saved() == []
+    # Regression guard: it must not silently relabel an Applied posting as
+    # merely Saved - the user needs to decide via mark_status_from_reality
+    # or force=True.
+    assert storage.load_matched()[0]["match_status"] == storage.MATCH_STATUS_NEW
+
+
+def test_save_to_saved_jobs_forced_copies_anyway_despite_the_conflict():
+    job_matching.add_candidates([_job()], "src")
+    storage.save_applied([{"company": "Acme", "title": "Backend Engineer", "link": "https://acme.example/jobs/1"}])
+    assert job_matching.save_to_saved_jobs(_job(), force=True) is True
+    assert len(storage.load_saved()) == 1
+    assert storage.load_matched()[0]["match_status"] == storage.MATCH_STATUS_SAVED
+
+
+def test_apply_to_applied_jobs_does_not_copy_or_relabel_when_already_saved():
+    job_matching.add_candidates([_job()], "src")
+    storage.save_saved([{"company": "Acme", "title": "Backend Engineer", "link": "https://acme.example/jobs/1"}])
+    assert job_matching.apply_to_applied_jobs(_job()) is False
+    assert storage.load_applied() == []
+    assert storage.load_matched()[0]["match_status"] == storage.MATCH_STATUS_NEW
+
+
+def test_apply_to_applied_jobs_forced_copies_anyway_despite_the_conflict():
+    job_matching.add_candidates([_job()], "src")
+    storage.save_saved([{"company": "Acme", "title": "Backend Engineer", "link": "https://acme.example/jobs/1"}])
+    assert job_matching.apply_to_applied_jobs(_job(), force=True) is True
+    assert len(storage.load_applied()) == 1
     assert storage.load_matched()[0]["match_status"] == storage.MATCH_STATUS_APPLIED
+
+
+def test_mark_status_from_reality_syncs_the_label_without_copying():
+    job_matching.add_candidates([_job()], "src")
+    storage.save_applied([{"company": "Acme", "title": "Backend Engineer", "link": "https://acme.example/jobs/1"}])
+    assert job_matching.mark_status_from_reality(_job()) is True
+    assert storage.load_saved() == []
+    assert storage.load_matched()[0]["match_status"] == storage.MATCH_STATUS_APPLIED
+
+
+def test_mark_status_from_reality_is_false_when_not_tracked_anywhere():
+    job_matching.add_candidates([_job()], "src")
+    assert job_matching.mark_status_from_reality(_job()) is False
 
 
 # --- scoring ---------------------------------------------------------------
