@@ -171,6 +171,28 @@ def test_apply_button_opens_a_conflict_dialog_instead_of_mislabeling_a_saved_mat
     ]
 
 
+def test_same_bucket_conflict_dialog_does_not_offer_to_create_a_duplicate():
+    # Regression test: "High" is tagged New in Matching Jobs but a separate
+    # Applied record for the same company+title already exists (added some
+    # other way) - tracked_elsewhere() reports "applied", and clicking "Add
+    # to Applications" (also targeting Applied) used to offer "Also add it
+    # to Applied Positions", which would create an actual second Applied
+    # record for one real job rather than resolve anything.
+    _seed()
+    storage.save_applied([{"company": "High", "title": "Backend", "link": "https://high.example"}])
+
+    at = AppTest.from_function(_render).run()
+    apply_btn = next(b for b in at.button if b.key and b.key.startswith("match_apply_"))
+    at = apply_btn.click().run()
+
+    assert not at.exception
+    assert any("already in" in m.value and "Applied Positions" in m.value for m in at.markdown)
+    assert not any(b.label == "Also add it to Applied Positions" for b in at.button)
+    assert any("would just create a duplicate" in c.value for c in at.caption)
+    assert any(b.label.startswith("Keep it in Applied Positions") for b in at.button)
+    assert len(storage.load_applied()) == 1
+
+
 def test_dismiss_button_hides_match():
     _seed()
     at = AppTest.from_function(_render).run()
@@ -292,3 +314,53 @@ def test_min_fit_score_unset_does_not_filter_the_toolbar_by_default():
     assert at.number_input(key="matches_min_fit").value == 0
     markdown = [m.value for m in at.markdown if "font-weight:700" in m.value]
     assert len(markdown) == 2
+
+
+def test_min_fit_filter_does_not_hide_an_unscored_match():
+    # Regression test: the filter used to drop any match whose fit_score
+    # was None/"" the moment a threshold was active - contradicting its own
+    # documented behavior ("hides already-scored matches below this
+    # score"). An unscored match (Ollama down, no resume yet) should stay
+    # visible, not disappear.
+    storage.save_matched([
+        {"company": "Scored", "title": "Backend", "link": "https://scored.example",
+         "source": storage.MATCH_SOURCE_LINKEDIN, "match_status": storage.MATCH_STATUS_NEW, "fit_score": 2},
+        {"company": "Unscored", "title": "Backend", "link": "https://unscored.example",
+         "source": storage.MATCH_SOURCE_LINKEDIN, "match_status": storage.MATCH_STATUS_NEW, "fit_score": None},
+    ])
+    at = AppTest.from_function(_render).run()
+    at.number_input(key="matches_min_fit").set_value(6)
+    at = at.run()
+
+    assert not at.exception
+    markdown = [m.value for m in at.markdown if "font-weight:700" in m.value]
+    assert len(markdown) == 1 and "Unscored" in markdown[0]
+
+
+def test_min_fit_filter_does_not_crash_on_a_non_numeric_stored_score():
+    storage.save_matched([
+        {"company": "Weird", "title": "Backend", "link": "https://weird.example",
+         "source": storage.MATCH_SOURCE_LINKEDIN, "match_status": storage.MATCH_STATUS_NEW, "fit_score": "8/10"},
+    ])
+    at = AppTest.from_function(_render).run()
+    at.number_input(key="matches_min_fit").set_value(6)
+    at = at.run()
+
+    assert not at.exception
+    markdown = [m.value for m in at.markdown if "font-weight:700" in m.value]
+    assert len(markdown) == 1 and "Weird" in markdown[0]
+
+
+def test_card_escapes_html_in_scraped_fields():
+    storage.save_matched([
+        {"company": "<b>Acme</b> & Co", "title": "<script>alert(1)</script>",
+         "link": "https://acme.example", "source": storage.MATCH_SOURCE_LINKEDIN,
+         "match_status": storage.MATCH_STATUS_NEW},
+    ])
+    at = AppTest.from_function(_render).run()
+    assert not at.exception
+    html_blob = "\n".join(m.value for m in at.markdown)
+    assert "<script>alert(1)</script>" not in html_blob
+    assert "<b>Acme</b> & Co" not in html_blob
+    assert "&lt;script&gt;" in html_blob
+    assert "&lt;b&gt;Acme&lt;/b&gt; &amp; Co" in html_blob

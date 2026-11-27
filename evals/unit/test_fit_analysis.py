@@ -1,3 +1,5 @@
+import pytest
+
 from src import fit_analysis, ollama_client, storage
 
 
@@ -88,6 +90,21 @@ def test_analyze_with_posting_text_handles_missing_evidence_lists_gracefully(mon
     assert result["fit_required_gaps"] == ""
     assert result["fit_preferred_gaps"] == ""
     assert result["fit_unknowns"] == ""
+
+
+def test_analyze_with_posting_text_raises_ollama_error_on_a_malformed_evidence_field(monkeypatch):
+    # Regression test: a scalar instead of a list for one of the evidence
+    # fields (a real risk from a local model under format:"json") used to
+    # raise a bare TypeError from inside _join_items's iteration - caught
+    # nowhere, indistinguishable from an unrelated bug, and (via
+    # job_matching.score_matches's loop) silently aborting every other
+    # record still waiting to be scored in the same batch.
+    monkeypatch.setattr(
+        ollama_client, "chat_json", lambda *a, **k: {"score": 5, "notes": "ok", "matched": True}
+    )
+
+    with pytest.raises(ollama_client.OllamaError, match="Expected a list"):
+        fit_analysis.analyze_with_posting_text("resume", {"company": "Acme"}, "")
 
 
 def test_analyze_uses_stored_description_without_fetching(monkeypatch):

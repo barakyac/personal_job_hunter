@@ -117,42 +117,49 @@ def test_in_a_call_dialog_opens_with_existing_notes_prefilled():
     assert at.button(key="save_call_details_0") is not None
 
 
-def test_save_call_details_updates_the_right_record():
-    # The dialog's own click-to-save round trip can't be driven through
-    # AppTest: a widget interaction inside an already-open st.dialog doesn't
-    # re-trigger its handler on a later .run() (AppTest doesn't simulate the
-    # fragment-scoped rerun real Streamlit uses for in-dialog interactions).
-    # So the save logic is tested directly as the plain function it is.
+def _render_call_notes_editor(index: int = 0):
     from src import board_view
 
+    board_view._call_notes_editor(index)
+
+
+def test_save_call_details_updates_the_right_record():
+    # Regression test: _save_call_details used to be called directly from
+    # inside the Save button's own `if st.button(...)` block, writing to
+    # session_state keys that the text_area/button above it had already
+    # instantiated this same run - Streamlit raises
+    # StreamlitWidgetAlreadyInstantiatedError for that. Driving the real
+    # button (now wired as its on_click callback) through AppTest is what
+    # actually exercises that failure mode, unlike calling the save
+    # function directly as a plain function.
     storage.save_applied(
         [
             {"company": "Acme", "title": "Backend", "status": "Applied"},
-            {"company": "Globex", "title": "Backend", "status": "Applied"},
+            {"company": "Globex", "title": "Backend", "status": "Applied",
+             "call_notes": "Spoke with the recruiter, next step is a tech screen."},
         ]
     )
 
-    board_view._save_call_details(1, date.today(), "", "Spoke with the recruiter, next step is a tech screen.")
+    at = AppTest.from_function(_render_call_notes_editor, kwargs={"index": 1}).run()
+    at = at.button(key="save_call_details_1").click().run()
 
+    assert not at.exception
     records = storage.load_applied()
     assert "call_notes" not in records[0]
     assert records[1]["call_notes"] == "Spoke with the recruiter, next step is a tech screen."
 
 
 def test_save_call_details_prepends_new_entry_onto_full_history():
-    # Same AppTest limitation as above - exercise the plain function the
-    # single "Save" button calls directly.
-    from src import board_view
-
     storage.save_applied(
         [{"company": "Acme", "title": "Backend", "status": "Applied", "call_notes": "### 2026-11-01\nFirst screen, went well."}]
     )
 
-    board_view._save_call_details(
-        0, date(2026, 11, 15), "Second call, got a take-home assignment.",
-        "### 2026-11-01\nFirst screen, went well.",
-    )
+    at = AppTest.from_function(_render_call_notes_editor).run()
+    at.date_input(key="new_call_date_0").set_value(date(2026, 11, 15))
+    at.text_area(key="new_call_notes_0").set_value("Second call, got a take-home assignment.")
+    at = at.button(key="save_call_details_0").click().run()
 
+    assert not at.exception
     records = storage.load_applied()
     assert records[0]["call_notes"] == (
         "### 2026-11-15\nSecond call, got a take-home assignment.\n\n"
@@ -161,12 +168,14 @@ def test_save_call_details_prepends_new_entry_onto_full_history():
 
 
 def test_save_call_details_on_a_record_with_no_prior_notes():
-    from src import board_view
-
     storage.save_applied([{"company": "Acme", "title": "Backend", "status": "Applied"}])
 
-    board_view._save_call_details(0, date(2026, 11, 15), "Quick intro call.", "")
+    at = AppTest.from_function(_render_call_notes_editor).run()
+    at.date_input(key="new_call_date_0").set_value(date(2026, 11, 15))
+    at.text_area(key="new_call_notes_0").set_value("Quick intro call.")
+    at = at.button(key="save_call_details_0").click().run()
 
+    assert not at.exception
     records = storage.load_applied()
     assert records[0]["call_notes"] == "### 2026-11-15\nQuick intro call."
 
@@ -177,17 +186,17 @@ def test_save_call_details_prepends_onto_a_hand_edit_not_yet_saved_to_disk():
     # entry, not whatever's still on disk - otherwise typing a correction
     # into Full history and logging a new call in the same visit would
     # silently discard that correction.
-    from src import board_view
-
     storage.save_applied(
         [{"company": "Acme", "title": "Backend", "status": "Applied", "call_notes": "### 2026-11-01\nFirst screen, went well."}]
     )
 
-    board_view._save_call_details(
-        0, date(2026, 11, 15), "Second call, got a take-home assignment.",
-        "### 2026-11-01\nFirst screen, went well (hand-edited correction).",
-    )
+    at = AppTest.from_function(_render_call_notes_editor).run()
+    at.text_area(key="call_notes_0").set_value("### 2026-11-01\nFirst screen, went well (hand-edited correction).")
+    at.date_input(key="new_call_date_0").set_value(date(2026, 11, 15))
+    at.text_area(key="new_call_notes_0").set_value("Second call, got a take-home assignment.")
+    at = at.button(key="save_call_details_0").click().run()
 
+    assert not at.exception
     records = storage.load_applied()
     assert records[0]["call_notes"] == (
         "### 2026-11-15\nSecond call, got a take-home assignment.\n\n"
@@ -201,42 +210,26 @@ def test_save_call_details_syncs_the_open_dialogs_full_history_box():
     # first time it's rendered in a session - once the dialog has been
     # opened once, Streamlit ignores that `value=` on every later rerun and
     # keeps whatever the box last showed. Without _save_call_details pushing
-    # the new text into that session_state key itself, logging a call
-    # during an already-open dialog would leave the box showing the
-    # pre-call text - and a later click would overwrite the just-logged
-    # entry with that stale text.
+    # the new text into that session_state key itself (from its on_click
+    # callback, which runs before this same run's text_area is
+    # instantiated), the box would show the pre-call text until a separate
+    # rerun, and a later click would overwrite the just-logged entry with
+    # that stale text.
     storage.save_applied(
         [{"company": "Acme", "title": "Backend", "status": "Interview", "call_notes": "### 2026-11-01\nFirst screen, went well."}]
     )
 
-    def _dialog_with_a_save_flag():
-        # Mirrors the real script order inside _call_notes_dialog: the
-        # "Save" button's handler (_save_call_details) runs, using the Full
-        # history text_area's current session-state value as the base, then
-        # control reaches that same text_area further down in the same
-        # script - exactly what a real rerun after that button click does,
-        # just without needing to click through AppTest's dialog (which
-        # doesn't replay a dialog's own button handlers - see the note on
-        # test_save_call_details_updates_the_right_record above).
-        import streamlit as st
-        from datetime import date
+    at = AppTest.from_function(_render_call_notes_editor).run()
+    at.date_input(key="new_call_date_0").set_value(date(2026, 11, 15))
+    at.text_area(key="new_call_notes_0").set_value("Second call, got a take-home assignment.")
+    at = at.button(key="save_call_details_0").click().run()
 
-        from src import board_view
-
-        if st.session_state.get("do_save"):
-            current_full_history = st.session_state.get(
-                "call_notes_0", "### 2026-11-01\nFirst screen, went well."
-            )
-            board_view._save_call_details(
-                0, date(2026, 11, 15), "Second call, got a take-home assignment.", current_full_history,
-            )
-        board_view._call_notes_dialog(0)
-
-    at = AppTest.from_function(_dialog_with_a_save_flag).run()
-    assert at.text_area(key="call_notes_0").value == "### 2026-11-01\nFirst screen, went well."
-
-    at.session_state["do_save"] = True
-    at.run()
+    assert not at.exception
+    assert at.text_area(key="call_notes_0").value == (
+        "### 2026-11-15\nSecond call, got a take-home assignment.\n\n"
+        "### 2026-11-01\nFirst screen, went well."
+    )
+    assert at.text_area(key="new_call_notes_0").value == ""
 
     records = storage.load_applied()
     assert records[0]["call_notes"] == (

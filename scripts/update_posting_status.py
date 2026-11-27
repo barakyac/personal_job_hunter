@@ -28,6 +28,22 @@ KINDS = {
 RESULTS = {"open": "open", "closed": "closed", "unknown": None}
 
 
+def _find_index(records: list[dict], company: str, title: str, link: str) -> int | None:
+    """Same contract as storage.find_record_index, but link-matching is
+    canonical first - a plain `==` would miss a Gmail tracking-param link
+    (e.g. ".../comm/jobs/view/123?trackingId=...") against the canonical
+    form list_tracked.py itself prints and the skill is told to pass,
+    silently falling back to company(+title) and risking a match against
+    the wrong record when a company has more than one posting."""
+    if link:
+        target = job_matching.canonical_link(link)
+        if target:
+            for i, r in enumerate(records):
+                if job_matching.canonical_link(r.get("link", "")) == target:
+                    return i
+    return storage.find_record_index(records, company, title, "")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("kind", choices=sorted(KINDS))
@@ -42,7 +58,7 @@ def main(argv: list[str] | None = None) -> None:
 
     loader, saver = KINDS[args.kind]
     records = loader()
-    idx = storage.find_record_index(records, args.company, args.title, args.link)
+    idx = _find_index(records, args.company, args.title, args.link)
     if idx is None:
         print(f"No unique match for company={args.company!r} title={args.title!r} in {args.kind}. Nothing updated.")
         return

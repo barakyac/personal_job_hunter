@@ -32,13 +32,18 @@ _LINKEDIN_CURRENT_JOB_RE = re.compile(r"[?&]currentJobId=(\d+)", re.IGNORECASE)
 _TRACKING_PARAMS = {"trackingid", "refid", "trk", "utm_source", "utm_medium", "utm_campaign", "utm_term",
                     "utm_content", "lipi", "midtoken", "midsig", "eid", "otptoken", "ref", "src", "source"}
 
-# A years-of-experience mention near any of these words is a preference,
-# not a requirement - "3+ years preferred" must never count as what the
-# posting requires.
+# A years-of-experience mention anywhere in the same clause as one of these
+# words is a preference, not a requirement - "3+ years preferred" must never
+# count as what the posting requires. Scoped to the comma-separated clause
+# containing the match (see extract_required_years), not the whole sentence -
+# a sentence can state the overall requirement in one clause and a separate
+# preferred add-on in another ("6+ years required, with 2+ years of
+# Kubernetes preferred"), and the first clause's figure must still count.
 _EXPERIENCE_PREFERENCE_MARKERS_RE = re.compile(
     r"\b(preferred|nice[\s-]to[\s-]have|a\s+plus|is\s+a\s+plus|bonus|desirable|ideally|advantage)\b",
     re.IGNORECASE,
 )
+_CLAUSE_SPLIT_RE = re.compile(r",\s*")
 # A years-of-experience mention near any of these is scoped to one named
 # technology, not the posting's overall requirement - "5+ years focused on
 # .NET Core/C#" is about .NET, not the role as a whole.
@@ -132,6 +137,15 @@ def tracked_identities() -> list[dict]:
     return rows
 
 
+# The only sources where a human or Claude actually opened the posting and
+# confirmed it was still accepting applications before adding it - see
+# .claude/skills/find-matching-jobs's step 7. Gmail job-alert emails and
+# Google Jobs/SerpAPI results are never opened first; stamping those Open
+# by default would be a guess, not a confirmation, and apply_posting_check's
+# no-downgrade rule would then protect that guess forever.
+_VERIFIED_OPEN_SOURCES = {storage.MATCH_SOURCE_LINKEDIN, storage.MATCH_SOURCE_GOOGLE_CLAUDE}
+
+
 def _clean_candidate(candidate: dict, source: str) -> dict:
     record = {col: "" for col in storage.MATCHED_COLUMNS}
     for col in storage.MATCHED_COLUMNS:
@@ -142,12 +156,27 @@ def _clean_candidate(candidate: dict, source: str) -> dict:
     record["date_found"] = record["date_found"] or dt.date.today().isoformat()
     record["match_status"] = storage.MATCH_STATUS_NEW
     record["fit_score"] = candidate.get("fit_score")
-    # A candidate only ever reaches here because whoever found it checked
-    # the posting was open (the find-matching-jobs skill skips closed ones
-    # outright) - so this is a real confirmation, not a default/guess.
-    record["posting_status"] = record["posting_status"] or storage.POSTING_STATUS_OPEN
-    record["posting_checked_at"] = record["posting_checked_at"] or dt.date.today().isoformat()
+    if not record["posting_status"]:
+        if record["source"] in _VERIFIED_OPEN_SOURCES:
+            # The find-matching-jobs skill only ever adds a candidate from
+            # these sources after opening it and confirming it's still
+            # accepting applications - so this is a real confirmation.
+            record["posting_status"] = storage.POSTING_STATUS_OPEN
+            record["posting_checked_at"] = record["posting_checked_at"] or dt.date.today().isoformat()
+        else:
+            record["posting_status"] = storage.POSTING_STATUS_UNKNOWN
     return record
+
+
+def _clause_spans(sentence: str) -> list[tuple[int, int]]:
+    """The comma-separated clauses of one sentence, as (start, end) offsets
+    into it."""
+    spans, pos = [], 0
+    for m in _CLAUSE_SPLIT_RE.finditer(sentence):
+        spans.append((pos, m.start()))
+        pos = m.end()
+    spans.append((pos, len(sentence)))
+    return spans
 
 
 def extract_required_years(description: str) -> int | None:
@@ -155,9 +184,15 @@ def extract_required_years(description: str) -> int | None:
     or None when it isn't stated or isn't clear enough to say. Deliberately
     narrow, not a general NLP reading of the posting:
 
-    - Only counts a mention sentence-scoped away from preference markers
+    - Only counts a mention clause-scoped away from preference markers
       ("preferred", "nice to have", "a plus", ...) - those describe what's
-      wanted, not what's required.
+      wanted, not what's required. Scoped to the comma-separated clause
+      containing the match, not the whole sentence, so a sentence that
+      states the overall requirement in one clause and a separate preferred
+      add-on in another ("6+ years of backend experience required, with 2+
+      years of Kubernetes preferred") still counts the first clause's
+      figure - a bug this fixed: the preference check used to run over the
+      whole sentence and threw away the earlier, clearly-required figure.
     - Only counts a mention not locally scoped to one named technology
       ("5+ years focused on .NET Core/C#" is about .NET, not the role as a
       whole) - checked in a window around the match, not the whole
@@ -178,10 +213,14 @@ def extract_required_years(description: str) -> int | None:
     for sentence in _SENTENCE_SPLIT_RE.split(description):
         sentence_start = offset
         offset += len(sentence) + 1
-        if _EXPERIENCE_PREFERENCE_MARKERS_RE.search(sentence):
-            continue
+        clause_spans = _clause_spans(sentence)
         for pattern in _EXPERIENCE_YEARS_PATTERNS:
             for m in pattern.finditer(sentence):
+                clause_start, clause_end = next(
+                    (s, e) for s, e in clause_spans if s <= m.start() < e
+                )
+                if _EXPERIENCE_PREFERENCE_MARKERS_RE.search(sentence[clause_start:clause_end]):
+                    continue
                 window = sentence[max(0, m.start() - 60):m.end() + 20]
                 if _EXPERIENCE_TECH_SCOPE_MARKERS_RE.search(window):
                     continue
@@ -200,16 +239,28 @@ def passes_experience_filter(candidate: dict, profile: dict) -> tuple[bool, int 
     - "" when there's no active filter (both bounds unset) - always passes.
     - "out_of_range" when a required-years figure was found but falls
       outside the configured bounds.
-    - "ambiguous_or_missing" when the filter is active but the posting's
-      required years couldn't be determined - never silently included or
-      silently dropped without a reason, since neither "assume it fits"
-      nor "assume it doesn't" is actually true here.
+    - "ambiguous_or_missing" when the filter is active, the posting *has* a
+      description, but its required years couldn't be determined from it -
+      never silently included or silently dropped without a reason, since
+      neither "assume it fits" nor "assume it doesn't" is actually true
+      here.
+
+    A candidate with no description at all (Gmail job-alert emails never
+    carry one - see gmail_alert_candidates) always passes regardless of the
+    filter: unlike a real posting whose text simply doesn't mention years,
+    there's no text here to have been ambiguous about, so there's nothing to
+    judge the candidate against. Treating that the same as "ambiguous"
+    would silently drop every Gmail-sourced candidate the moment an
+    experience filter is configured.
     """
     min_years = profile.get("min_experience_years")
     max_years = profile.get("max_experience_years")
     if min_years is None and max_years is None:
         return True, None, ""
-    required = extract_required_years(candidate.get("description", ""))
+    description = (candidate.get("description") or "").strip()
+    if not description:
+        return True, None, ""
+    required = extract_required_years(description)
     if required is None:
         return False, None, "ambiguous_or_missing"
     lo = min_years if min_years is not None else 0

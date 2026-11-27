@@ -125,6 +125,34 @@ def test_passes_experience_filter_only_max_set_is_open_ended_below():
     assert job_matching.passes_experience_filter({"description": "6+ years of experience."}, profile)[0] is False
 
 
+def test_extract_required_years_counts_an_earlier_required_clause_despite_a_later_preferred_one():
+    # Regression test: the preference-marker check used to run over the
+    # whole sentence, so a trailing "preferred" clause disqualified an
+    # earlier, clearly-required figure in the same sentence.
+    text = "6+ years of backend experience required, with 2+ years of Kubernetes preferred."
+    assert job_matching.extract_required_years(text) == 6
+
+
+def test_passes_experience_filter_a_candidate_with_no_description_always_passes():
+    # Gmail job-alert candidates never carry a description (see
+    # gmail_alert_candidates) - unlike a real posting whose text just
+    # doesn't mention years, there's no text here to judge at all, so this
+    # must not be treated the same as "ambiguous_or_missing" (which would
+    # silently drop every Gmail-sourced candidate once a filter is active).
+    profile = _profile(min_experience_years=3, max_experience_years=6)
+    assert job_matching.passes_experience_filter({}, profile) == (True, None, "")
+    assert job_matching.passes_experience_filter({"description": ""}, profile) == (True, None, "")
+    assert job_matching.passes_experience_filter({"description": "   "}, profile) == (True, None, "")
+
+
+def test_add_candidates_does_not_drop_a_description_less_candidate_when_experience_filter_is_active():
+    profile = _profile(min_experience_years=3, max_experience_years=6)
+    counts = job_matching.add_candidates([_job(description="")], "src", profile)
+    assert counts["added"] == 1
+    assert counts["experience_filtered"] == 0 and counts["experience_unknown"] == 0
+    assert storage.load_matched()[0]["required_years_min"] == ""
+
+
 def test_add_candidates_applies_the_experience_filter_and_stamps_required_years():
     profile = _profile(min_experience_years=3, max_experience_years=6)
     counts = job_matching.add_candidates(
@@ -190,6 +218,9 @@ def test_add_candidates_appends_new_with_defaults():
     # No resume is configured in this test, so the auto-score pass that
     # add_candidates now runs on every newly added, not-yet-scored match
     # short-circuits with this one message instead of calling Ollama.
+    # MATCH_SOURCE_GOOGLE (SerpAPI) is never opened before being added -
+    # see test_add_candidates_stamps_open_only_for_a_verified_source below
+    # for the one source where "confirmed open" is actually true.
     counts = job_matching.add_candidates([_job()], storage.MATCH_SOURCE_GOOGLE)
     assert counts == {
         "added": 1, "already_tracked": 0, "filtered": 0, "invalid": 0,
@@ -201,11 +232,33 @@ def test_add_candidates_appends_new_with_defaults():
     assert record["match_status"] == storage.MATCH_STATUS_NEW
     assert record["date_found"]
     assert set(storage.MATCHED_COLUMNS) <= set(record)
-    # A candidate only ever reaches add_candidates having just been
-    # confirmed open (the skill skips closed postings outright) - so this
-    # is a real confirmation stamped at add time, not a guessed default.
+    # Nobody actually opened this posting before adding it (it came from a
+    # search API, not the skill browsing LinkedIn) - stamping it Open would
+    # be a guess apply_posting_check()'s no-downgrade rule would then
+    # protect forever, so it's Unknown until a real re-check happens.
+    assert record["posting_status"] == storage.POSTING_STATUS_UNKNOWN
+    assert not record["posting_checked_at"]
+
+
+def test_add_candidates_stamps_open_only_for_a_verified_source():
+    # The find-matching-jobs skill (Claude in Chrome) is the only path that
+    # actually opens a posting and confirms it's still accepting
+    # applications before adding it - see .claude/skills/find-matching-jobs
+    # step 7. Only its two sources get a real "confirmed open" default.
+    counts = job_matching.add_candidates([_job()], storage.MATCH_SOURCE_LINKEDIN)
+    assert counts["added"] == 1
+    [record] = storage.load_matched()
     assert record["posting_status"] == storage.POSTING_STATUS_OPEN
     assert record["posting_checked_at"]
+
+
+def test_add_candidates_leaves_an_explicit_posting_status_alone():
+    counts = job_matching.add_candidates(
+        [_job(posting_status=storage.POSTING_STATUS_CLOSED)], storage.MATCH_SOURCE_LINKEDIN
+    )
+    assert counts["added"] == 1
+    [record] = storage.load_matched()
+    assert record["posting_status"] == storage.POSTING_STATUS_CLOSED
 
 
 def test_add_candidates_auto_scores_new_matches_against_the_resume(monkeypatch):
@@ -301,7 +354,9 @@ def test_candidate_without_company_or_link_is_invalid():
 # --- save / status ---------------------------------------------------------
 
 def test_save_to_saved_jobs_copies_and_marks_saved():
-    job_matching.add_candidates([_job(fit_score=8, fit_notes="good", source_detail="LinkedIn: picks")], "src")
+    job_matching.add_candidates(
+        [_job(fit_score=8, fit_notes="good", source_detail="LinkedIn: picks")], storage.MATCH_SOURCE_LINKEDIN
+    )
     assert job_matching.save_to_saved_jobs(_job()) is True
 
     [saved] = storage.load_saved()
@@ -442,7 +497,7 @@ def test_update_posting_status_script_updates_matched():
 
 
 def test_update_posting_status_script_unknown_never_overwrites_a_confirmed_status(capsys):
-    job_matching.add_candidates([_job()], "src")  # stamped Open at add time
+    job_matching.add_candidates([_job()], storage.MATCH_SOURCE_LINKEDIN)  # stamped Open at add time
     update_posting_status.main(["matched", "--company", "Acme", "--title", "Backend Engineer", "--result", "unknown"])
     [record] = storage.load_matched()
     assert record["posting_status"] == storage.POSTING_STATUS_OPEN
@@ -453,6 +508,20 @@ def test_update_posting_status_script_reports_no_match(capsys):
     update_posting_status.main(["matched", "--company", "Nobody", "--result", "open"])
     assert "Nothing updated" in capsys.readouterr().out
     assert storage.load_matched() == []
+
+
+def test_update_posting_status_script_matches_a_canonically_equal_link():
+    # Regression test: a plain `==` link match would miss this - the stored
+    # link carries no tracking params, but the one passed in does, exactly
+    # the shape list_tracked.py's own canonical_link output vs. a raw
+    # LinkedIn/Gmail link can differ by.
+    job_matching.add_candidates([_job(link="https://acme.example/jobs/1")], "src")
+    update_posting_status.main([
+        "matched", "--company", "Acme",
+        "--link", "https://acme.example/jobs/1?utm_source=linkedin&trk=abc", "--result", "closed",
+    ])
+    [record] = storage.load_matched()
+    assert record["posting_status"] == storage.POSTING_STATUS_CLOSED
 
 
 # --- cross-bucket conflicts (Saved vs Applied) ------------------------------

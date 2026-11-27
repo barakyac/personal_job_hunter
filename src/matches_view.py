@@ -51,7 +51,17 @@ def _conflict_dialog(record: dict, where: str, intent: str) -> None:
     """Shown whenever "Save job"/"Add to Applications" is clicked on a
     match that's already tracked somewhere (Saved or Applied) - save_to_
     saved_jobs/apply_to_applied_jobs never guess which bucket is right on
-    their own; it's always this dialog's call, left to the user."""
+    their own; it's always this dialog's call, left to the user.
+
+    `where` (where it's already tracked) and the clicked button's own
+    target bucket can be the *same* bucket - e.g. this Matching Jobs record
+    is still tagged "New" but a separate Applied record for the same
+    company+title already exists (added some other way), and the user
+    clicks "Add to Applications" on it. "Also add it to Applied Positions"
+    would then create an actual second Applied record for one real job, not
+    resolve anything - so that option is only offered for a genuine
+    cross-bucket conflict (where != target); the same-bucket case only
+    offers syncing this record's own label to match reality."""
     bucket = "Saved Jobs" if where == "saved" else "Applied Positions"
     target = "Saved Jobs" if intent == "save" else "Applied Positions"
     key = _row_key(record)
@@ -63,7 +73,9 @@ def _conflict_dialog(record: dict, where: str, intent: str) -> None:
                  use_container_width=True):
         job_matching.mark_status_from_reality(record)
         st.rerun()
-    if st.button(f"Also add it to {target}", key=f"conflict_force_{key}", use_container_width=True):
+    if bucket == target:
+        st.caption(f"It's already in {bucket}, so adding it again would just create a duplicate record there.")
+    elif st.button(f"Also add it to {target}", key=f"conflict_force_{key}", use_container_width=True):
         if intent == "save":
             job_matching.save_to_saved_jobs(record, force=True)
         else:
@@ -85,6 +97,20 @@ def _fit_sort_key(record: dict) -> float:
 
 def _split_list(text: str) -> list[str]:
     return [part.strip() for part in text.replace("\n", ",").split(",") if part.strip()]
+
+
+def _save_profile_safely(profile: dict) -> None:
+    """storage.save_match_profile() with no error handling of its own would
+    leave a failed write (disk full, permissions) indistinguishable from any
+    other crash - Streamlit's default unhandled-exception page, with no
+    indication of whether the settings were actually saved. Report it
+    explicitly instead."""
+    try:
+        storage.save_match_profile(profile)
+    except OSError as exc:
+        st.error(f"Could not save your settings: {exc}")
+    else:
+        st.success("Saved.")
 
 
 def _report(counts: dict, label: str) -> None:
@@ -155,7 +181,7 @@ def _render_profile_editor(profile: dict) -> None:
                 if min_years is not None and max_years is not None and min_years > max_years:
                     st.error("Min years must be less than or equal to Max years.")
                 else:
-                    storage.save_match_profile({
+                    _save_profile_safely({
                         **profile,
                         "titles": _split_list(titles),
                         "location": location.strip(),
@@ -164,7 +190,6 @@ def _render_profile_editor(profile: dict) -> None:
                         "min_experience_years": min_years,
                         "max_experience_years": max_years,
                     })
-                    st.success("Saved.")
 
     with st.expander("Filtering Settings", expanded=False):
         st.caption("Fit scores always come from your resume on the Profile page.")
@@ -177,8 +202,7 @@ def _render_profile_editor(profile: dict) -> None:
                      "itself is computed or worded; you can still raise or lower it per-visit up there.",
             )
             if st.form_submit_button("Save filtering settings", type="primary"):
-                storage.save_match_profile({**profile, "min_fit_score": min_fit_score})
-                st.success("Saved.")
+                _save_profile_safely({**profile, "min_fit_score": min_fit_score})
 
 
 def _scan_gmail(profile: dict) -> None:
@@ -270,14 +294,23 @@ def _render_card(record: dict) -> None:
             with info_col:
                 posting_status = record.get("posting_status") or storage.POSTING_STATUS_OPEN
                 posting_bit = posting_status if posting_status != storage.POSTING_STATUS_OPEN else None
-                meta = [b for b in [
+                # Scraped straight from LinkedIn/Google Jobs postings - escape
+                # before it goes into unsafe_allow_html markdown, same reason
+                # _preformatted (above) escapes job descriptions and fit
+                # notes: a title or company name containing "<"/"&" would
+                # otherwise break the layout or inject markup.
+                company_html = (
                     f'<span class="jh-match-company" style="font-weight:700;">'
-                    f'{record.get("company") or "Unknown company"}</span>',
-                    record.get("location"), record.get("salary"), record.get("source"), record.get("date_found"),
-                    posting_bit,
-                ] if b]
+                    f'{html.escape(record.get("company") or "Unknown company")}</span>'
+                )
+                meta = [company_html] + [
+                    html.escape(str(b)) for b in [
+                        record.get("location"), record.get("salary"), record.get("source"),
+                        record.get("date_found"), posting_bit,
+                    ] if b
+                ]
                 st.markdown(
-                    f'<div class="jh-match-title">{record.get("title") or "Untitled"}</div>'
+                    f'<div class="jh-match-title">{html.escape(record.get("title") or "Untitled")}</div>'
                     f'<div class="jh-match-meta">{" · ".join(meta)}</div>',
                     unsafe_allow_html=True,
                 )
@@ -411,9 +444,22 @@ def render() -> None:
         if source_filter:
             visible = [r for r in visible if r.get("source") in source_filter]
         if min_fit:
-            visible = [
-                r for r in visible if r.get("fit_score") not in (None, "") and float(r["fit_score"]) >= min_fit
-            ]
+            # "Hides already-scored matches below this score" (see the
+            # help text on the Filtering Settings field this defaults
+            # from) - an unscored match, or one whose stored score can't
+            # even be read as a number, is neither "below" nor "at or
+            # above" the threshold, so it stays visible rather than being
+            # silently dropped (or crashing the whole page on a bad value).
+            def _meets_min_fit(r: dict) -> bool:
+                score = r.get("fit_score")
+                if score in (None, ""):
+                    return True
+                try:
+                    return float(score) >= min_fit
+                except (TypeError, ValueError):
+                    return True
+
+            visible = [r for r in visible if _meets_min_fit(r)]
         visible.sort(key=_fit_sort_key)
 
         if not matches:

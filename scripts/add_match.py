@@ -61,6 +61,8 @@ def main(argv: list[str] | None = None) -> dict:
         f"required-experience range, {counts['experience_unknown']} with unclear required experience, "
         f"{counts['invalid']} missing company/link."
     )
+    for error in counts.get("score_errors", []):
+        print(f"Scoring failed: {error}")
     return counts
 
 

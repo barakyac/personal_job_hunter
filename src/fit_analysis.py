@@ -93,6 +93,14 @@ def _join_items(items) -> str:
         return ""
     if isinstance(items, str):
         return items
+    if not isinstance(items, list):
+        # The prompt asks for a list; a model can still emit a bare scalar
+        # (e.g. "matched": true) for one field. Iterating over that directly
+        # would raise TypeError deep inside analyze_many's loop, indistinguishable
+        # from an unrelated bug - raise the same error type callers already
+        # catch instead, so one malformed field reports as one error rather
+        # than aborting every other record still waiting to be scored.
+        raise ollama_client.OllamaError(f"Expected a list of items, got {type(items).__name__}: {items!r}")
     return "\n".join(str(item).strip() for item in items if str(item).strip())
 
 

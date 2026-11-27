@@ -35,19 +35,32 @@ div[data-testid="stDialog"] div[class*="st-key-call_notes_"] textarea {
 """
 
 
-def _save_call_details(index: int, call_date: date, new_notes: str, full_history: str) -> None:
-    """Single combined save for the Call details dialog. The dialog used to
-    split this into two buttons - "Log a new call" (prepend a dated entry)
-    and "Save call notes" (save the free-edit box) - which meant filling in
-    both the "What happened" box and hand-editing Full history in the same
-    sitting needed two separate clicks, and it was easy to click only one
-    and lose the other edit. One button now does both: if "What happened"
-    has text, it's prepended as a new dated entry on top of `full_history`
-    (not what's on disk) - using the box's current, possibly hand-edited
-    text as the base, same string field (so the Table view and existing
-    records need no migration).
+def _save_call_details(index: int) -> None:
+    """Single combined save for the Call details dialog, wired as the Save
+    button's `on_click` callback - not called from inside the button's own
+    `if st.button(...)` block. Streamlit runs `on_click` callbacks before
+    the rest of the script (and its widgets) are (re-)instantiated for this
+    run; writing to a widget's `st.session_state` key is only legal before
+    that widget exists for the run, so this has to happen in the callback,
+    not in the handler block below the text_area/button that already
+    created those keys this run (that ordering used to raise
+    StreamlitWidgetAlreadyInstantiatedError on every click).
 
-    Also pushes the result into the "Full history" text_area's own
+    The dialog used to split this into two buttons - "Log a new call"
+    (prepend a dated entry) and "Save call notes" (save the free-edit box) -
+    which meant filling in both the "What happened" box and hand-editing
+    Full history in the same sitting needed two separate clicks, and it was
+    easy to click only one and lose the other edit. One button now does
+    both: if "What happened" has text, it's prepended as a new dated entry
+    on top of the Full history box's current value (not what's on disk) -
+    using the box's current, possibly hand-edited text as the base, same
+    string field (so the Table view and existing records need no
+    migration). Reading both text areas and the date from session_state
+    (rather than taking them as arguments) is what lets this run as a
+    callback: a callback fires from the widget's own on_click wiring, with
+    no access to local variables from a script body it runs before.
+
+    Also pushes the result back into the "Full history" text_area's own
     session_state key, and clears the "What happened" box's. Once a
     text_area's key is already in session_state, Streamlit ignores the
     `value=` it's rendered with on every later rerun - without this, the
@@ -55,6 +68,9 @@ def _save_call_details(index: int, call_date: date, new_notes: str, full_history
     sync with the entry just saved, and a later click would silently
     overwrite it with that stale text."""
     applied = storage.load_applied()
+    new_notes = st.session_state.get(f"new_call_notes_{index}", "")
+    call_date = st.session_state.get(f"new_call_date_{index}") or date.today()
+    full_history = st.session_state.get(f"call_notes_{index}", "")
     base = (full_history or "").strip()
     if new_notes.strip():
         entry = f"### {call_date.isoformat()}\n{new_notes.strip()}"
@@ -71,37 +87,40 @@ def _save_call_details(index: int, call_date: date, new_notes: str, full_history
 def _call_notes_editor(index: int) -> None:
     """The notes half of the Call details dialog, scoped to its own
     fragment so Save only reruns this piece - not the whole dialog. A plain
-    `st.rerun()` here (needed so the Full history box visibly shows the
-    merged text after a save - see _save_call_details) reruns the entire
-    script, which is also how Streamlit closes an st.dialog, taking the
-    Assistant/Job description panel in chat_col down with it even though
-    neither has anything to do with saving a note. `st.rerun(scope=
-    "fragment")` reruns only this fragment, so the dialog stays open and
-    chat_col is left alone."""
+    `st.rerun()` here would rerun the entire script, which is also how
+    Streamlit closes an st.dialog, taking the Assistant/Job description
+    panel in chat_col down with it even though neither has anything to do
+    with saving a note - the fragment scoping keeps the dialog open and
+    chat_col alone. No explicit rerun is needed for Save itself: its
+    on_click callback (_save_call_details) runs before this fragment's
+    widgets are (re-)instantiated for the run the click triggers, so the
+    Full history box already reflects the merged text by the time it's
+    drawn in that same run."""
     applied = storage.load_applied()
     record = applied[index]
 
     add_date_col, add_notes_col = st.columns([1, 3])
     with add_date_col:
-        new_call_date = st.date_input("Date", value=date.today(), key=f"new_call_date_{index}")
+        st.date_input("Date", value=date.today(), key=f"new_call_date_{index}")
     with add_notes_col:
-        new_call_notes = st.text_area(
+        st.text_area(
             "What happened", key=f"new_call_notes_{index}", height=68,
             label_visibility="collapsed", placeholder="What happened on this call? (optional)",
         )
 
     st.divider()
     st.caption("Full history (edit directly if needed)")
-    call_notes = st.text_area(
+    st.text_area(
         "Call details",
         value=record.get("call_notes", ""),
         height=350,
         key=f"call_notes_{index}",
         label_visibility="collapsed",
     )
-    if st.button("Save", key=f"save_call_details_{index}", type="primary", use_container_width=True):
-        _save_call_details(index, new_call_date, new_call_notes, call_notes)
-        st.rerun(scope="fragment")
+    st.button(
+        "Save", key=f"save_call_details_{index}", type="primary", use_container_width=True,
+        on_click=_save_call_details, args=(index,),
+    )
 
 
 @st.dialog("Call details", width="large")

@@ -203,15 +203,29 @@ def load_match_profile() -> dict:
     a file written before a key existed."""
     stored = {}
     if _match_profile_file().exists():
-        with _match_profile_file().open("r", encoding="utf-8") as f:
-            stored = json.load(f) or {}
+        try:
+            with _match_profile_file().open("r", encoding="utf-8") as f:
+                stored = json.load(f) or {}
+        except (json.JSONDecodeError, OSError):
+            # A truncated/corrupt file (an interrupted write, a full disk)
+            # must not permanently break the whole Matching Jobs page, which
+            # calls this as the very first thing it does - fall back to
+            # defaults instead of letting the error propagate out of here.
+            stored = {}
     return {**DEFAULT_MATCH_PROFILE, **{k: v for k, v in stored.items() if k in DEFAULT_MATCH_PROFILE}}
 
 
 def save_match_profile(profile: dict) -> None:
     data_dir().mkdir(parents=True, exist_ok=True)
     clean = {k: profile.get(k, v) for k, v in DEFAULT_MATCH_PROFILE.items()}
-    with _match_profile_file().open("w", encoding="utf-8") as f:
+    path = _match_profile_file()
+    # Same rolling-backup-before-overwrite insurance _save() gives every
+    # other record file, so a bad write here has the same recovery path.
+    if path.exists():
+        dest = backup_dir()
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, dest / path.name)
+    with path.open("w", encoding="utf-8") as f:
         json.dump(clean, f, indent=2)
 
 

@@ -99,6 +99,22 @@ def test_chat_json_raises_ollama_error_on_non_json_content(monkeypatch):
         ollama_client.chat_json("system prompt", "user prompt")
 
 
+@pytest.mark.parametrize("content", ["[1, 2, 3]", "null", "true", '"just a string"', "42"])
+def test_chat_json_raises_ollama_error_on_valid_json_that_is_not_an_object(monkeypatch, content):
+    # Regression test: json.loads happily parses a list/null/bool/string/
+    # number as valid JSON - none of which is the object every caller here
+    # expects and immediately calls .get(...) on. Letting that AttributeError
+    # leak instead of raising OllamaError used to crash the whole batch a
+    # caller like job_matching.score_matches was looping over.
+    def fake_post(url, json, timeout):
+        return FakeResponse(content)
+
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    with pytest.raises(ollama_client.OllamaError, match="expected a JSON object"):
+        ollama_client.chat_json("system prompt", "user prompt")
+
+
 def test_chat_returns_reply_text(monkeypatch):
     def fake_post(url, json, timeout):
         return FakeResponse("Here's some free-form advice.")
