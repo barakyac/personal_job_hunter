@@ -50,8 +50,7 @@ def main() -> None:
         except ollama_client.OllamaError as exc:
             print(f"FAILED ({exc})")
             continue
-        records[i]["fit_score"] = result["fit_score"]
-        records[i]["fit_notes"] = result["fit_notes"]
+        records[i].update(result)
         print(f"score={result['fit_score']}")
 
     saver(records)

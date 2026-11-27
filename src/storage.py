@@ -85,16 +85,27 @@ STATUS_COLORS = {
 # stage (Applied, Interview, ...) once they've applied.
 POSTING_STATUS_OPEN = "Open for applications"
 POSTING_STATUS_CLOSED = "Closed for applications"
-POSTING_STATUS_OPTIONS = [POSTING_STATUS_OPEN, POSTING_STATUS_CLOSED]
+# A posting whose status couldn't actually be established - a failed check
+# (sign-in wall, CAPTCHA, timeout), never a guess. Distinct from OPEN/CLOSED
+# so a failed check can't be confused with a real confirmation of either.
+POSTING_STATUS_UNKNOWN = "Unknown"
+POSTING_STATUS_OPTIONS = [POSTING_STATUS_OPEN, POSTING_STATUS_CLOSED, POSTING_STATUS_UNKNOWN]
+
+# Fields every fit-scoring result (src/fit_analysis.py) carries, beyond the
+# score itself - see job_matching.apply_posting_check() for the one place
+# that decides how a posting-status check updates posting_status/
+# posting_checked_at without ever regressing an earlier confirmation.
+FIT_DETAIL_COLUMNS = ["fit_matched", "fit_required_gaps", "fit_preferred_gaps", "fit_unknowns"]
 
 SAVED_COLUMNS = [
-    "company", "title", "link", "location", "salary", "posting_status", "date_saved", "notes",
-    "description", "fit_score", "fit_notes",
+    "company", "title", "link", "location", "salary", "posting_status", "posting_checked_at",
+    "date_saved", "notes", "description", "fit_score", "fit_notes", *FIT_DETAIL_COLUMNS,
+    "required_years_min",
 ]
 APPLIED_COLUMNS = [
     "company", "title", "link", "location", "salary",
     "date_saved", "date_applied", "status", "rejected_from_stage", "notes",
-    "call_notes", "description", "fit_score", "fit_notes",
+    "call_notes", "description", "fit_score", "fit_notes", *FIT_DETAIL_COLUMNS, "required_years_min",
 ]
 
 
@@ -153,7 +164,8 @@ MATCH_SOURCE_OPTIONS = [MATCH_SOURCE_GMAIL, MATCH_SOURCE_GOOGLE, MATCH_SOURCE_LI
 
 MATCHED_COLUMNS = [
     "company", "title", "link", "location", "salary", "source", "source_detail",
-    "date_found", "match_status", "description", "fit_score", "fit_notes",
+    "date_found", "match_status", "posting_status", "posting_checked_at",
+    "description", "fit_score", "fit_notes", *FIT_DETAIL_COLUMNS, "required_years_min",
 ]
 
 DEFAULT_MATCH_PROFILE = {
@@ -161,6 +173,19 @@ DEFAULT_MATCH_PROFILE = {
     "location": "",
     "keywords": [],
     "exclude_keywords": [],
+    # None means "no limit" for that bound - an existing profile saved
+    # before these fields existed loads as None/None here, i.e. no
+    # experience filter at all. These describe which postings to collect,
+    # never the user's own experience - fit scoring is a separate concern
+    # (see src/fit_analysis.py) and never reads these.
+    "min_experience_years": None,
+    "max_experience_years": None,
+    # None means "no limit" here too. Unlike the experience bounds above,
+    # this is purely a Matching Jobs page display filter (see
+    # matches_view.render()) - it hides already-scored matches below this
+    # score from the list, but never affects what add_candidates() collects
+    # or how a fit score itself is computed or worded.
+    "min_fit_score": None,
 }
 
 
@@ -265,7 +290,7 @@ def find_record_index(records: list[dict], company: str, title: str = "", link: 
     return None
 
 
-NUMERIC_COLUMNS = {"fit_score"}
+NUMERIC_COLUMNS = {"fit_score", "required_years_min"}
 
 # Text columns whose missing/blank value should default to something other
 # than "" - e.g. a record saved before posting_status existed, or added via

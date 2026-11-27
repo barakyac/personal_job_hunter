@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from scripts import add_match
+from scripts import add_match, list_tracked, update_posting_status
 from src import fit_analysis, gmail_client, job_extract, job_matching, job_search_client, ollama_client, storage
 
 
@@ -34,6 +34,156 @@ def test_empty_link_stays_empty():
     assert job_matching.canonical_link("") == ""
 
 
+# --- extract_required_years / passes_experience_filter ---------------------
+
+@pytest.mark.parametrize("description,expected", [
+    ("Looking for someone with 3+ years of backend experience.", 3),
+    ("We'd like 3-5 years of relevant experience.", 3),
+    ("3 to 5 years of relevant experience.", 3),
+    ("4-6 years in a similar role.", 4),
+    ("6+ years of hands-on backend work.", 6),
+    ("2+ years of backend development.", 2),
+    ("7+ years of backend development.", 7),
+    ("At least 5 years of professional experience.", 5),
+    ("Minimum of 5 years professional experience.", 5),
+    # Real posting (Melio): leading-plus form - the "+" comes before the
+    # digit, not after. A real regex gap this run caught: the original
+    # patterns only recognized "5+ years", not "+5 years".
+    ("+5 years of professional experience as a software engineer.", 5),
+    ("5 years of experience in software development.", 5),
+    ("", None),
+    (None, None),
+    ("A great team and a ping pong table.", None),
+])
+def test_extract_required_years_basic_shapes(description, expected):
+    assert job_matching.extract_required_years(description) == expected
+
+
+def test_extract_required_years_ignores_a_preferred_only_mention():
+    text = "3+ years of Kubernetes experience preferred."
+    assert job_matching.extract_required_years(text) is None
+
+
+def test_extract_required_years_falls_back_to_a_required_mention_elsewhere():
+    text = "2+ years of Kubernetes experience preferred. 5+ years of backend experience required."
+    assert job_matching.extract_required_years(text) == 5
+
+
+def test_extract_required_years_prefers_overall_over_tech_specific_in_same_sentence():
+    # Real example (LSports posting): the headline figure is about the role
+    # as a whole; the second figure is scoped to one named technology.
+    text = ("Seasoned Developer: 6+ years of software development experience, "
+            "with at least 5+ years focused on .NET Core/C#.")
+    assert job_matching.extract_required_years(text) == 6
+
+
+def test_extract_required_years_skips_a_lone_tech_specific_mention():
+    text = "5+ years focused on Kubernetes administration."
+    assert job_matching.extract_required_years(text) is None
+
+
+def _profile(**overrides):
+    return {**storage.DEFAULT_MATCH_PROFILE, **overrides}
+
+
+def test_passes_experience_filter_always_true_when_no_bounds_set():
+    candidate = {"description": "20+ years required."}
+    assert job_matching.passes_experience_filter(candidate, _profile()) == (True, None, "")
+
+
+@pytest.mark.parametrize("description,expected_years,expected_pass", [
+    ("3+ years of experience.", 3, True),
+    ("3-5 years of experience.", 3, True),
+    ("4-6 years of experience.", 4, True),
+    ("6+ years of experience.", 6, True),
+    ("2+ years of experience.", 2, False),
+    ("7+ years of experience.", 7, False),
+])
+def test_passes_experience_filter_inclusive_bounds(description, expected_years, expected_pass):
+    profile = _profile(min_experience_years=3, max_experience_years=6)
+    passes, years, reason = job_matching.passes_experience_filter({"description": description}, profile)
+    assert (passes, years) == (expected_pass, expected_years)
+    if not expected_pass:
+        assert reason == "out_of_range"
+
+
+def test_passes_experience_filter_reports_ambiguous_when_filter_active():
+    profile = _profile(min_experience_years=3, max_experience_years=6)
+    passes, years, reason = job_matching.passes_experience_filter({"description": "Great team culture."}, profile)
+    assert (passes, years, reason) == (False, None, "ambiguous_or_missing")
+
+
+def test_passes_experience_filter_only_min_set_is_open_ended_above():
+    profile = _profile(min_experience_years=3, max_experience_years=None)
+    assert job_matching.passes_experience_filter({"description": "20+ years of experience."}, profile)[0] is True
+    assert job_matching.passes_experience_filter({"description": "1+ years of experience."}, profile)[0] is False
+
+
+def test_passes_experience_filter_only_max_set_is_open_ended_below():
+    profile = _profile(min_experience_years=None, max_experience_years=5)
+    assert job_matching.passes_experience_filter({"description": "0+ years of experience."}, profile)[0] is True
+    assert job_matching.passes_experience_filter({"description": "6+ years of experience."}, profile)[0] is False
+
+
+def test_add_candidates_applies_the_experience_filter_and_stamps_required_years():
+    profile = _profile(min_experience_years=3, max_experience_years=6)
+    counts = job_matching.add_candidates(
+        [
+            _job(link="a", description="3+ years of backend experience."),
+            _job(company="Out", link="b", description="2+ years of backend experience."),
+            _job(company="Unclear", link="c", description="Great ping pong table."),
+        ],
+        "src", profile,
+    )
+    assert counts["added"] == 1
+    assert counts["experience_filtered"] == 1
+    assert counts["experience_unknown"] == 1
+    [record] = storage.load_matched()
+    assert record["required_years_min"] == 3
+
+
+def test_add_candidates_skips_experience_filter_entirely_when_not_configured():
+    counts = job_matching.add_candidates(
+        [_job(description="2+ years of backend experience.")], "src", storage.DEFAULT_MATCH_PROFILE,
+    )
+    assert counts["added"] == 1
+    assert counts["experience_filtered"] == 0 and counts["experience_unknown"] == 0
+    assert storage.load_matched()[0]["required_years_min"] == ""
+
+
+# --- match profile: experience bounds persistence ---------------------------
+
+def test_match_profile_experience_bounds_roundtrip():
+    storage.save_match_profile({
+        "titles": ["Backend Engineer"], "min_experience_years": 3, "max_experience_years": 6,
+    })
+    loaded = storage.load_match_profile()
+    assert loaded["min_experience_years"] == 3
+    assert loaded["max_experience_years"] == 6
+
+
+def test_match_profile_experience_bounds_default_to_no_limit():
+    assert storage.load_match_profile()["min_experience_years"] is None
+    assert storage.load_match_profile()["max_experience_years"] is None
+
+
+def test_existing_profile_without_experience_fields_has_no_filter():
+    # Simulates a profile saved before this feature existed.
+    storage.save_match_profile({"titles": ["Backend Engineer"], "location": "Tel Aviv"})
+    loaded = storage.load_match_profile()
+    assert loaded["min_experience_years"] is None
+    assert loaded["max_experience_years"] is None
+
+
+def test_match_profile_min_fit_score_roundtrip():
+    storage.save_match_profile({"titles": ["Backend Engineer"], "min_fit_score": 6})
+    assert storage.load_match_profile()["min_fit_score"] == 6
+
+
+def test_match_profile_min_fit_score_defaults_to_no_limit():
+    assert storage.load_match_profile()["min_fit_score"] is None
+
+
 # --- add_candidates --------------------------------------------------------
 
 def test_add_candidates_appends_new_with_defaults():
@@ -43,6 +193,7 @@ def test_add_candidates_appends_new_with_defaults():
     counts = job_matching.add_candidates([_job()], storage.MATCH_SOURCE_GOOGLE)
     assert counts == {
         "added": 1, "already_tracked": 0, "filtered": 0, "invalid": 0,
+        "experience_filtered": 0, "experience_unknown": 0,
         "score_errors": ["Add your resume on the Profile page first - fit is scored against it."],
     }
     [record] = storage.load_matched()
@@ -50,6 +201,11 @@ def test_add_candidates_appends_new_with_defaults():
     assert record["match_status"] == storage.MATCH_STATUS_NEW
     assert record["date_found"]
     assert set(storage.MATCHED_COLUMNS) <= set(record)
+    # A candidate only ever reaches add_candidates having just been
+    # confirmed open (the skill skips closed postings outright) - so this
+    # is a real confirmation stamped at add time, not a guessed default.
+    assert record["posting_status"] == storage.POSTING_STATUS_OPEN
+    assert record["posting_checked_at"]
 
 
 def test_add_candidates_auto_scores_new_matches_against_the_resume(monkeypatch):
@@ -111,14 +267,29 @@ def test_dismissed_match_is_not_re_added():
     assert counts["already_tracked"] == 1
 
 
-def test_exclude_keywords_filter_title_and_description():
-    profile = {**storage.DEFAULT_MATCH_PROFILE, "exclude_keywords": ["Frontend", "relocation"]}
+def test_exclude_keywords_filter_title_only():
+    profile = {**storage.DEFAULT_MATCH_PROFILE, "exclude_keywords": ["Frontend"]}
     counts = job_matching.add_candidates(
-        [_job(title="Frontend Engineer", link="a"), _job(company="B", description="Requires relocation", link="b"),
-         _job(company="C", link="c")],
+        [_job(title="Frontend Engineer", link="a"), _job(company="C", link="c")],
         "src", profile,
     )
-    assert counts["filtered"] == 2 and counts["added"] == 1
+    assert counts["filtered"] == 1 and counts["added"] == 1
+
+
+def test_exclude_keywords_do_not_match_an_incidental_description_mention():
+    # Regression guard: this used to exclude a posting just because its
+    # description happened to mention "the Team Lead" or "a Senior member
+    # of the team" in passing - not because the role itself was senior or
+    # a team-lead position. See job_matching.passes_profile_filters.
+    profile = {**storage.DEFAULT_MATCH_PROFILE, "exclude_keywords": ["Senior", "Team Lead"]}
+    counts = job_matching.add_candidates(
+        [_job(title="Backend Engineer", link="a",
+              description="Take ownership of tasks, with guidance from the Team Lead."),
+         _job(company="B", title="Backend Engineer", link="b",
+              description="Mentor Jr engineers as a Senior member of the team.")],
+        "src", profile,
+    )
+    assert counts["filtered"] == 0 and counts["added"] == 2
 
 
 def test_candidate_without_company_or_link_is_invalid():
@@ -172,6 +343,116 @@ def test_apply_to_applied_jobs_does_not_duplicate_an_existing_applied_job():
     assert job_matching.apply_to_applied_jobs(_job()) is False
     assert len(storage.load_applied()) == 1
     assert storage.load_matched()[0]["match_status"] == storage.MATCH_STATUS_NEW
+
+
+# --- tracked_identities (pre-browse dedup) ----------------------------------
+
+def test_tracked_identities_covers_all_three_buckets():
+    job_matching.add_candidates([_job()], "src")
+    storage.save_saved([{"company": "S Co", "title": "SRE", "link": "https://s.example/1"}])
+    storage.save_applied([{"company": "A Co", "title": "QA", "link": "https://a.example/1"}])
+
+    rows = job_matching.tracked_identities()
+    assert {(r["where"], r["company"]) for r in rows} == {
+        ("matched", "Acme"), ("saved", "S Co"), ("applied", "A Co"),
+    }
+
+
+def test_tracked_identities_canonical_link_matches_the_authoritative_dedup():
+    job_matching.add_candidates(
+        [_job(link="https://www.linkedin.com/comm/jobs/view/42?trk=x")], "src"
+    )
+    [row] = job_matching.tracked_identities()
+    assert row["canonical_link"] == job_matching.canonical_link("https://www.linkedin.com/jobs/view/42/")
+
+
+# --- apply_posting_check (unknown-availability + non-regression) -----------
+
+def test_apply_posting_check_records_a_confirmed_open():
+    record = {}
+    job_matching.apply_posting_check(record, "open", "2026-11-26")
+    assert record == {"posting_status": storage.POSTING_STATUS_OPEN, "posting_checked_at": "2026-11-26"}
+
+
+def test_apply_posting_check_records_a_confirmed_closed():
+    record = {"posting_status": storage.POSTING_STATUS_OPEN, "posting_checked_at": "2026-11-20"}
+    job_matching.apply_posting_check(record, "closed", "2026-11-26")
+    assert record["posting_status"] == storage.POSTING_STATUS_CLOSED
+    assert record["posting_checked_at"] == "2026-11-26"
+
+
+def test_apply_posting_check_sets_unknown_when_nothing_was_ever_confirmed():
+    record = {}
+    job_matching.apply_posting_check(record, None, "2026-11-26")
+    assert record == {"posting_status": storage.POSTING_STATUS_UNKNOWN, "posting_checked_at": "2026-11-26"}
+
+
+def test_apply_posting_check_never_downgrades_a_confirmed_open_to_unknown():
+    record = {"posting_status": storage.POSTING_STATUS_OPEN, "posting_checked_at": "2026-11-20"}
+    job_matching.apply_posting_check(record, None, "2026-11-26")
+    # A failed check (sign-in wall, CAPTCHA, timeout) must never overwrite
+    # an earlier real confirmation, or its timestamp - a later failure
+    # proves nothing about whether the earlier confirmation still holds.
+    assert record["posting_status"] == storage.POSTING_STATUS_OPEN
+    assert record["posting_checked_at"] == "2026-11-20"
+
+
+def test_apply_posting_check_never_downgrades_a_confirmed_closed_to_unknown():
+    record = {"posting_status": storage.POSTING_STATUS_CLOSED, "posting_checked_at": "2026-11-20"}
+    job_matching.apply_posting_check(record, None, "2026-11-26")
+    assert record["posting_status"] == storage.POSTING_STATUS_CLOSED
+    assert record["posting_checked_at"] == "2026-11-20"
+
+
+def test_save_to_saved_jobs_preserves_a_non_open_posting_status():
+    # Regression guard: this used to hard-code "Open for applications" on
+    # every save, silently erasing a real Closed/Unknown confirmation the
+    # moment the user saved the match.
+    job_matching.add_candidates([_job()], "src")
+    records = storage.load_matched()
+    job_matching.apply_posting_check(records[0], "closed", "2026-11-20")
+    storage.save_matched(records)
+
+    assert job_matching.save_to_saved_jobs(_job()) is True
+    [saved] = storage.load_saved()
+    assert saved["posting_status"] == storage.POSTING_STATUS_CLOSED
+    assert saved["posting_checked_at"] == "2026-11-20"
+
+
+# --- scripts/list_tracked.py, scripts/update_posting_status.py -------------
+
+def test_list_tracked_script_runs_without_error(capsys):
+    job_matching.add_candidates([_job()], "src")
+    list_tracked.main()
+    out = capsys.readouterr().out
+    assert "Acme" in out and "1 tracked posting" in out
+
+
+def test_list_tracked_script_handles_nothing_tracked(capsys):
+    list_tracked.main()
+    assert "Nothing tracked yet." in capsys.readouterr().out
+
+
+def test_update_posting_status_script_updates_matched():
+    job_matching.add_candidates([_job()], "src")
+    update_posting_status.main(["matched", "--company", "Acme", "--title", "Backend Engineer", "--result", "closed"])
+    [record] = storage.load_matched()
+    assert record["posting_status"] == storage.POSTING_STATUS_CLOSED
+    assert record["posting_checked_at"]
+
+
+def test_update_posting_status_script_unknown_never_overwrites_a_confirmed_status(capsys):
+    job_matching.add_candidates([_job()], "src")  # stamped Open at add time
+    update_posting_status.main(["matched", "--company", "Acme", "--title", "Backend Engineer", "--result", "unknown"])
+    [record] = storage.load_matched()
+    assert record["posting_status"] == storage.POSTING_STATUS_OPEN
+    assert "never overwrites" in capsys.readouterr().out
+
+
+def test_update_posting_status_script_reports_no_match(capsys):
+    update_posting_status.main(["matched", "--company", "Nobody", "--result", "open"])
+    assert "Nothing updated" in capsys.readouterr().out
+    assert storage.load_matched() == []
 
 
 # --- cross-bucket conflicts (Saved vs Applied) ------------------------------
@@ -399,3 +680,23 @@ def test_add_match_script_json_file(tmp_path):
     counts = add_match.main(["--source", "google", "--json", str(path)])
     assert counts["added"] == 2 and counts["already_tracked"] == 1
     assert {r["source"] for r in storage.load_matched()} == {storage.MATCH_SOURCE_GOOGLE_CLAUDE}
+
+
+def test_add_match_script_reports_experience_filter_outcomes(tmp_path, capsys):
+    # Regression guard: the CLI report used to silently omit these two
+    # counts even though add_candidates() already tracked them - a live run
+    # looked like "0 added, nothing else to explain" instead of naming why.
+    storage.save_match_profile(
+        {**storage.DEFAULT_MATCH_PROFILE, "min_experience_years": 3, "max_experience_years": 6}
+    )
+    path = tmp_path / "jobs.json"
+    path.write_text(json.dumps([
+        _job(link="a", description="2+ years of backend experience."),
+        _job(company="B", link="b", description="Great ping pong table."),
+    ]), encoding="utf-8")
+
+    add_match.main(["--source", "linkedin", "--json", str(path)])
+
+    out = capsys.readouterr().out
+    assert "1 outside the required-experience range" in out
+    assert "1 with unclear required experience" in out

@@ -69,12 +69,13 @@ a scan never floods it:
   ```
 
 Set your target titles, location, extra keywords and exclude keywords under
-"What counts as a match". Anything already in Matching Jobs, Saved Jobs or
-Applied is skipped, including a match you dismissed. LinkedIn's different
-link shapes for one posting are treated as the same job. "Score fit" rates
-new matches against your resume with the same Ollama prompt Saved Jobs
-uses. "Save job" copies a match into Saved Jobs, keeping its description and
-fit score.
+"Search Settings". Anything already in Matching Jobs, Saved Jobs or Applied
+is skipped, including a match you dismissed. LinkedIn's different link
+shapes for one posting are treated as the same job. "Score fit" rates new
+matches against your resume with the same Ollama prompt Saved Jobs uses.
+"Save job" copies a match into Saved Jobs, keeping its description and fit
+score. "Filtering Settings" sets the default minimum fit score the match
+list is filtered to.
 
 ## Testing
 

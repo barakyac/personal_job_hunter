@@ -229,6 +229,45 @@ def test_mark_closed_button_marks_position_closed():
     assert saved[0]["posting_status"] == storage.POSTING_STATUS_CLOSED
 
 
+def test_unknown_posting_status_shows_a_caption_without_disabling_actions():
+    storage.save_saved([{
+        "company": "Acme", "title": "Backend", "link": "",
+        "posting_status": storage.POSTING_STATUS_UNKNOWN, "date_saved": "2026-01-01",
+    }])
+
+    at = AppTest.from_function(_render_saved).run()
+
+    assert not at.exception
+    assert any("Couldn't confirm it's still open" in c.value for c in at.caption)
+    # Unlike a confirmed-closed posting, "unknown" is informational only -
+    # it must never disable row actions the way a confirmed closed does.
+    assert not next(b for b in at.button if b.key == "mark_applied_row_Acme_Backend_0").disabled
+
+
+def test_bulk_edit_round_trip_preserves_fit_detail_and_checked_at_fields():
+    # Regression guard: to_dataframe/from_dataframe round-trip only keeps
+    # whatever's in storage.SAVED_COLUMNS - a field left out of that list
+    # would be silently dropped the moment someone clicks "Save changes"
+    # without even touching the grid.
+    storage.save_saved([{
+        "company": "Acme", "title": "Backend", "link": "", "date_saved": "2026-01-01",
+        "posting_status": storage.POSTING_STATUS_CLOSED, "posting_checked_at": "2026-11-20",
+        "fit_matched": "Python: matches", "fit_required_gaps": "AWS: gap",
+        "fit_preferred_gaps": "K8s: gap", "fit_unknowns": "On-call: unknown",
+    }])
+
+    at = AppTest.from_function(_render_saved).run()
+    at.button(key="save_saved_btn").click().run()
+
+    assert not at.exception
+    [saved] = storage.load_saved()
+    assert saved["posting_checked_at"] == "2026-11-20"
+    assert saved["fit_matched"] == "Python: matches"
+    assert saved["fit_required_gaps"] == "AWS: gap"
+    assert saved["fit_preferred_gaps"] == "K8s: gap"
+    assert saved["fit_unknowns"] == "On-call: unknown"
+
+
 def test_closed_posting_hidden_by_default_toggle():
     storage.save_saved([{
         "company": "Acme", "title": "Backend", "link": "",

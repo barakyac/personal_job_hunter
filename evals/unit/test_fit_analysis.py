@@ -23,6 +23,22 @@ def test_build_prompt_includes_posting_text_when_present():
     assert "Posting body text" in prompt
 
 
+def test_build_prompt_includes_the_stated_required_years_when_present():
+    prompt = fit_analysis.build_prompt("resume", {"company": "Acme", "required_years_min": 5}, "")
+    assert "Stated required experience: 5+ years" in prompt
+
+
+def test_build_prompt_omits_the_required_years_line_when_absent():
+    prompt = fit_analysis.build_prompt("resume", {"company": "Acme"}, "")
+    assert "Stated required experience" not in prompt
+
+
+def test_build_prompt_distinguishes_unmentioned_from_confirmed_gaps():
+    prompt = fit_analysis.build_prompt("resume", {"company": "Acme"}, "")
+    assert "required_gaps" in prompt and "preferred_gaps" in prompt and "unknowns" in prompt
+    assert "not mentioned" in prompt.lower()
+
+
 def test_analyze_many_updates_records_in_place(monkeypatch):
     def fake_chat_json(system, user, model=ollama_client.DEFAULT_MODEL):
         return {"score": 8, "notes": "Strong match."}
@@ -37,6 +53,41 @@ def test_analyze_many_updates_records_in_place(monkeypatch):
     assert records[0]["fit_score"] == 8
     assert records[0]["fit_notes"] == "Strong match."
     assert records[1]["fit_score"] == 8
+
+
+def test_analyze_with_posting_text_joins_evidence_lists_into_text_fields(monkeypatch):
+    def fake_chat_json(system, user, model=ollama_client.DEFAULT_MODEL):
+        return {
+            "score": 7, "notes": "Decent overall.",
+            "matched": ["Python: 5 years on resume vs posting's 3+ requirement"],
+            "required_gaps": ["Posting requires AWS; resume only shows GCP"],
+            "preferred_gaps": ["Kubernetes preferred; resume doesn't show it"],
+            "unknowns": ["Posting asks about on-call experience; resume doesn't say"],
+        }
+
+    monkeypatch.setattr(ollama_client, "chat_json", fake_chat_json)
+
+    result = fit_analysis.analyze_with_posting_text("resume", {"company": "Acme"}, "posting text")
+
+    assert result["fit_score"] == 7
+    assert "Python: 5 years" in result["fit_matched"]
+    assert "AWS" in result["fit_required_gaps"]
+    assert "Kubernetes" in result["fit_preferred_gaps"]
+    assert "on-call" in result["fit_unknowns"]
+
+
+def test_analyze_with_posting_text_handles_missing_evidence_lists_gracefully(monkeypatch):
+    # The model's instructed to always return these keys, but a bare score/
+    # notes response (like the rest of this test file's older-style mocks)
+    # must not blow up - every field just comes back empty.
+    monkeypatch.setattr(ollama_client, "chat_json", lambda *a, **k: {"score": 5, "notes": "ok"})
+
+    result = fit_analysis.analyze_with_posting_text("resume", {"company": "Acme"}, "")
+
+    assert result["fit_matched"] == ""
+    assert result["fit_required_gaps"] == ""
+    assert result["fit_preferred_gaps"] == ""
+    assert result["fit_unknowns"] == ""
 
 
 def test_analyze_uses_stored_description_without_fetching(monkeypatch):

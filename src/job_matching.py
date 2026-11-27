@@ -32,6 +32,32 @@ _LINKEDIN_CURRENT_JOB_RE = re.compile(r"[?&]currentJobId=(\d+)", re.IGNORECASE)
 _TRACKING_PARAMS = {"trackingid", "refid", "trk", "utm_source", "utm_medium", "utm_campaign", "utm_term",
                     "utm_content", "lipi", "midtoken", "midsig", "eid", "otptoken", "ref", "src", "source"}
 
+# A years-of-experience mention near any of these words is a preference,
+# not a requirement - "3+ years preferred" must never count as what the
+# posting requires.
+_EXPERIENCE_PREFERENCE_MARKERS_RE = re.compile(
+    r"\b(preferred|nice[\s-]to[\s-]have|a\s+plus|is\s+a\s+plus|bonus|desirable|ideally|advantage)\b",
+    re.IGNORECASE,
+)
+# A years-of-experience mention near any of these is scoped to one named
+# technology, not the posting's overall requirement - "5+ years focused on
+# .NET Core/C#" is about .NET, not the role as a whole.
+_EXPERIENCE_TECH_SCOPE_MARKERS_RE = re.compile(
+    r"\bfocused on\b|\bspecifically (?:in|with)\b|\bexperience (?:with|in|using)\s+[A-Z]",
+)
+# Matches the shapes postings actually use for a required-years figure:
+# "5+ years", "3-5 years"/"3 to 5 years" (only the lower bound matters -
+# see extract_required_years), "minimum of 5 years"/"at least 5 years", and
+# a plain "5 years" as a fallback for postings that drop the "+".
+_EXPERIENCE_YEARS_PATTERNS = [
+    re.compile(r"(\d{1,2})\s*\+\s*years?", re.IGNORECASE),           # "5+ years"
+    re.compile(r"\+\s*(\d{1,2})\s*years?", re.IGNORECASE),           # "+5 years" (leading plus)
+    re.compile(r"(\d{1,2})\s*(?:-|–|to)\s*(\d{1,2})\s*\+?\s*years?", re.IGNORECASE),
+    re.compile(r"(?:minimum(?:\s+of)?|at least|min\.?)\s*(\d{1,2})\s*years?", re.IGNORECASE),
+    re.compile(r"(\d{1,2})\s*years?\s+of\s+experience", re.IGNORECASE),
+]
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.;\n])\s+")
+
 
 def canonical_link(link: str) -> str:
     """A comparable form of a job link, so the same posting found by two
@@ -79,6 +105,33 @@ def find_tracked(candidate: dict, matched: list[dict] | None = None) -> str | No
     return None
 
 
+def tracked_identities() -> list[dict]:
+    """Every already-tracked posting (Matching Jobs, Saved Jobs, Applied
+    Positions) as a light {where, company, title, link, canonical_link} row
+    - for the find-matching-jobs skill to check a search-results listing
+    against *before* spending time opening each card. A canonical_link match
+    is a certain duplicate (the same posting, however it was found); a
+    company+title match alone is only a possible one, since one company can
+    open more than one role with the same title. This never decides
+    anything on its own - add_candidates()/find_tracked() still run their
+    own check at write time and are the real authority."""
+    rows = []
+    for where, records in (
+        ("matched", storage.load_matched()),
+        ("saved", storage.load_saved()),
+        ("applied", storage.load_applied()),
+    ):
+        for r in records:
+            rows.append({
+                "where": where,
+                "company": r.get("company", ""),
+                "title": r.get("title", ""),
+                "link": r.get("link", ""),
+                "canonical_link": canonical_link(r.get("link", "")),
+            })
+    return rows
+
+
 def _clean_candidate(candidate: dict, source: str) -> dict:
     record = {col: "" for col in storage.MATCHED_COLUMNS}
     for col in storage.MATCHED_COLUMNS:
@@ -89,16 +142,96 @@ def _clean_candidate(candidate: dict, source: str) -> dict:
     record["date_found"] = record["date_found"] or dt.date.today().isoformat()
     record["match_status"] = storage.MATCH_STATUS_NEW
     record["fit_score"] = candidate.get("fit_score")
+    # A candidate only ever reaches here because whoever found it checked
+    # the posting was open (the find-matching-jobs skill skips closed ones
+    # outright) - so this is a real confirmation, not a default/guess.
+    record["posting_status"] = record["posting_status"] or storage.POSTING_STATUS_OPEN
+    record["posting_checked_at"] = record["posting_checked_at"] or dt.date.today().isoformat()
     return record
 
 
+def extract_required_years(description: str) -> int | None:
+    """The posting's stated *overall* required minimum years of experience,
+    or None when it isn't stated or isn't clear enough to say. Deliberately
+    narrow, not a general NLP reading of the posting:
+
+    - Only counts a mention sentence-scoped away from preference markers
+      ("preferred", "nice to have", "a plus", ...) - those describe what's
+      wanted, not what's required.
+    - Only counts a mention not locally scoped to one named technology
+      ("5+ years focused on .NET Core/C#" is about .NET, not the role as a
+      whole) - checked in a window around the match, not the whole
+      sentence, so an earlier *overall* figure in the same sentence (as in
+      "6+ years of software development experience, with at least 5+ years
+      focused on .NET Core/C#") is still counted even though a later
+      clause in that same sentence is tech-scoped.
+    - For a range ("3-5 years"), only the lower bound is used - see
+      job_matching's callers for why (the configured bounds compare against
+      the posting's minimum, not its maximum).
+    - Picks whichever qualifying mention appears first in reading order,
+      on the assumption postings state the headline requirement before any
+      narrower caveat.
+    """
+    if not description:
+        return None
+    best_years, best_pos, offset = None, None, 0
+    for sentence in _SENTENCE_SPLIT_RE.split(description):
+        sentence_start = offset
+        offset += len(sentence) + 1
+        if _EXPERIENCE_PREFERENCE_MARKERS_RE.search(sentence):
+            continue
+        for pattern in _EXPERIENCE_YEARS_PATTERNS:
+            for m in pattern.finditer(sentence):
+                window = sentence[max(0, m.start() - 60):m.end() + 20]
+                if _EXPERIENCE_TECH_SCOPE_MARKERS_RE.search(window):
+                    continue
+                absolute_pos = sentence_start + m.start()
+                if best_pos is None or absolute_pos < best_pos:
+                    best_years, best_pos = int(m.group(1)), absolute_pos
+    return best_years
+
+
+def passes_experience_filter(candidate: dict, profile: dict) -> tuple[bool, int | None, str]:
+    """Whether a candidate's stated required experience fits the profile's
+    configured (min, max) years bounds, inclusively. Returns (passes,
+    required_years, reason) - reason is only meaningful when passes is
+    False, for the caller to report *why*:
+
+    - "" when there's no active filter (both bounds unset) - always passes.
+    - "out_of_range" when a required-years figure was found but falls
+      outside the configured bounds.
+    - "ambiguous_or_missing" when the filter is active but the posting's
+      required years couldn't be determined - never silently included or
+      silently dropped without a reason, since neither "assume it fits"
+      nor "assume it doesn't" is actually true here.
+    """
+    min_years = profile.get("min_experience_years")
+    max_years = profile.get("max_experience_years")
+    if min_years is None and max_years is None:
+        return True, None, ""
+    required = extract_required_years(candidate.get("description", ""))
+    if required is None:
+        return False, None, "ambiguous_or_missing"
+    lo = min_years if min_years is not None else 0
+    hi = max_years if max_years is not None else float("inf")
+    if lo <= required <= hi:
+        return True, required, ""
+    return False, required, "out_of_range"
+
+
 def passes_profile_filters(candidate: dict, profile: dict) -> bool:
-    """Drop a candidate whose title/description hits one of the profile's
-    exclude keywords (e.g. "senior staff", "frontend", "relocation")."""
+    """Drop a candidate whose title hits one of the profile's exclude
+    keywords (e.g. "senior", "frontend", "team lead"). Title-only,
+    deliberately: a description is full of incidental mentions that don't
+    describe the role itself (a Backend Engineer posting that happens to
+    say "reports to the Team Lead", or "mentor Jr engineers as a Senior
+    member of the team") - matching against the whole text excluded
+    otherwise-good, in-range candidates on exactly this kind of false
+    positive."""
     excludes = [_norm(k) for k in profile.get("exclude_keywords", []) if _norm(k)]
     if not excludes:
         return True
-    haystack = _norm(f"{candidate.get('title', '')} {candidate.get('description', '')}")
+    haystack = _norm(candidate.get("title", ""))
     return not any(k in haystack for k in excludes)
 
 
@@ -107,11 +240,14 @@ def add_candidates(candidates: list[dict], source: str, profile: dict | None = N
     whichever of them don't already carry a score, so a match never sits
     unscored just because no one has clicked "Score fit" yet. Returns
     counts: {"added": n, "already_tracked": n, "filtered": n, "invalid": n,
-    "score_errors": [...]}. A candidate needs at least a company or a link
-    to be kept."""
+    "experience_filtered": n, "experience_unknown": n, "score_errors": [...]}.
+    A candidate needs at least a company or a link to be kept."""
     profile = profile if profile is not None else storage.load_match_profile()
     matched = storage.load_matched()
-    counts = {"added": 0, "already_tracked": 0, "filtered": 0, "invalid": 0, "score_errors": []}
+    counts = {
+        "added": 0, "already_tracked": 0, "filtered": 0, "invalid": 0,
+        "experience_filtered": 0, "experience_unknown": 0, "score_errors": [],
+    }
     added_records = []
     for raw in candidates:
         if not (raw.get("company") or "").strip() and not (raw.get("link") or "").strip():
@@ -123,7 +259,13 @@ def add_candidates(candidates: list[dict], source: str, profile: dict | None = N
         if not passes_profile_filters(raw, profile):
             counts["filtered"] += 1
             continue
+        exp_ok, required_years, exp_reason = passes_experience_filter(raw, profile)
+        if not exp_ok:
+            counts["experience_unknown" if exp_reason == "ambiguous_or_missing" else "experience_filtered"] += 1
+            continue
         record = _clean_candidate(raw, source)
+        if required_years is not None:
+            record["required_years_min"] = required_years
         matched.append(record)
         added_records.append(record)
         counts["added"] += 1
@@ -145,6 +287,24 @@ def _find_index(records: list[dict], record: dict) -> int | None:
         if _identity(r) == identity:
             return i
     return None
+
+
+def apply_posting_check(record: dict, confirmed: str | None, checked_at: str) -> None:
+    """Write the outcome of checking whether a posting is still open, in
+    place on `record`. `confirmed` is "open", "closed", or None (the check
+    failed - sign-in wall, CAPTCHA, timeout, couldn't tell). A failed check
+    only ever sets Unknown when there's no existing Open/Closed confirmation
+    to protect - it never downgrades one, and never bumps its timestamp, so
+    a real prior confirmation always outranks a later failed attempt."""
+    if confirmed == "open":
+        record["posting_status"] = storage.POSTING_STATUS_OPEN
+        record["posting_checked_at"] = checked_at
+    elif confirmed == "closed":
+        record["posting_status"] = storage.POSTING_STATUS_CLOSED
+        record["posting_checked_at"] = checked_at
+    elif record.get("posting_status") not in (storage.POSTING_STATUS_OPEN, storage.POSTING_STATUS_CLOSED):
+        record["posting_status"] = storage.POSTING_STATUS_UNKNOWN
+        record["posting_checked_at"] = checked_at
 
 
 def set_status(record: dict, status: str) -> bool:
@@ -220,12 +380,21 @@ def save_to_saved_jobs(record: dict, force: bool = False) -> bool:
         "link": match.get("link", ""),
         "location": match.get("location", ""),
         "salary": match.get("salary", ""),
-        "posting_status": storage.POSTING_STATUS_OPEN,
+        # Carries over whatever was actually established for this match -
+        # never reset to Open, which would silently erase a real Closed/
+        # Unknown confirmation the moment it's saved.
+        "posting_status": match.get("posting_status") or storage.POSTING_STATUS_OPEN,
+        "posting_checked_at": match.get("posting_checked_at", ""),
         "date_saved": dt.date.today().isoformat(),
         "notes": source_line,
         "description": match.get("description", ""),
         "fit_score": match.get("fit_score"),
         "fit_notes": match.get("fit_notes", ""),
+        "fit_matched": match.get("fit_matched", ""),
+        "fit_required_gaps": match.get("fit_required_gaps", ""),
+        "fit_preferred_gaps": match.get("fit_preferred_gaps", ""),
+        "fit_unknowns": match.get("fit_unknowns", ""),
+        "required_years_min": match.get("required_years_min"),
     })
     storage.save_saved(saved)
     records[idx]["match_status"] = storage.MATCH_STATUS_SAVED
@@ -270,6 +439,11 @@ def apply_to_applied_jobs(record: dict, force: bool = False) -> bool:
         "description": match.get("description", ""),
         "fit_score": match.get("fit_score"),
         "fit_notes": match.get("fit_notes", ""),
+        "fit_matched": match.get("fit_matched", ""),
+        "fit_required_gaps": match.get("fit_required_gaps", ""),
+        "fit_preferred_gaps": match.get("fit_preferred_gaps", ""),
+        "fit_unknowns": match.get("fit_unknowns", ""),
+        "required_years_min": match.get("required_years_min"),
     })
     storage.save_applied(applied)
     records[idx]["match_status"] = storage.MATCH_STATUS_APPLIED
@@ -297,8 +471,7 @@ def score_matches(records_to_score: list[dict], on_progress=None, model: str = o
         idx = _find_index(records, target)
         if idx is None:
             continue
-        records[idx]["fit_score"] = result["fit_score"]
-        records[idx]["fit_notes"] = result["fit_notes"]
+        records[idx].update(result)
         storage.save_matched(records)
     return errors
 

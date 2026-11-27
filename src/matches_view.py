@@ -34,6 +34,16 @@ def _fit_explanation_dialog(record: dict) -> None:
     if score not in (None, ""):
         st.markdown(f"Fit score: **{score}**/10")
     st.markdown(_preformatted(record.get("fit_notes") or ""), unsafe_allow_html=True)
+    sections = [
+        ("Matches", record.get("fit_matched")),
+        ("Required gaps", record.get("fit_required_gaps")),
+        ("Preferred gaps", record.get("fit_preferred_gaps")),
+        ("Not mentioned in the resume", record.get("fit_unknowns")),
+    ]
+    for label, text in sections:
+        if text:
+            st.markdown(f"**{label}**")
+            st.markdown(_preformatted(text), unsafe_allow_html=True)
 
 
 @st.dialog("Already tracked")
@@ -83,6 +93,10 @@ def _report(counts: dict, label: str) -> None:
         bits.append(f"{counts['already_tracked']} already tracked")
     if counts["filtered"]:
         bits.append(f"{counts['filtered']} excluded by your keywords")
+    if counts.get("experience_filtered"):
+        bits.append(f"{counts['experience_filtered']} outside your required-experience range")
+    if counts.get("experience_unknown"):
+        bits.append(f"{counts['experience_unknown']} with unclear required experience")
     suffix = f" (skipped {', '.join(bits)})" if bits else ""
     if counts["added"]:
         st.success(f"Added {counts['added']} new match(es) from {label}{suffix}.")
@@ -93,17 +107,20 @@ def _report(counts: dict, label: str) -> None:
 
 
 def _render_profile_editor(profile: dict) -> None:
-    """Collapsible editor for the match profile. Reads fresh from disk on
-    every rerun (including the one a form submit triggers), so callers that
-    need the profile just call storage.load_match_profile() directly rather
-    than depending on this function's return value."""
+    """Collapsible editors for the match profile, split into what decides
+    which postings get collected (Search Settings) and what decides how
+    already-collected matches are presented (Filtering Settings). Each form
+    saves the *whole* profile (storage.save_match_profile resets any key
+    it isn't given back to its default) - built from the freshly-loaded
+    `profile` plus just that form's own fields, so saving one group never
+    wipes out the other's. Reads fresh from disk on every rerun (including
+    the one a form submit triggers), so callers that need the profile just
+    call storage.load_match_profile() directly rather than depending on
+    this function's return value."""
     empty = not profile["titles"]
-    with st.expander("What counts as a match", expanded=empty):
-        st.caption(
-            "Used for the Google Jobs search and by Claude when it browses LinkedIn and Google for you. "
-            "Fit scores always come from your resume on the Profile page."
-        )
-        with st.form("match_profile_form", border=False):
+    with st.expander("Search Settings", expanded=empty):
+        st.caption("Used for the Google Jobs search and by Claude when it browses LinkedIn and Google for you.")
+        with st.form("match_search_form", border=False):
             titles = st.text_input(
                 "Target titles (comma-separated)", value=", ".join(profile["titles"]),
                 placeholder="Backend Engineer, AI Infrastructure Engineer", key="match_titles",
@@ -116,17 +133,51 @@ def _render_profile_editor(profile: dict) -> None:
                 placeholder="Python, distributed systems", key="match_keywords",
             )
             excludes = st.text_input(
-                "Exclude jobs mentioning", value=", ".join(profile["exclude_keywords"]),
+                "Exclude job titles mentioning", value=", ".join(profile["exclude_keywords"]),
                 placeholder="frontend, team lead", key="match_excludes",
+                help="Checked against the job title only, so an incidental mention in the description "
+                     "(e.g. \"reports to the Team Lead\") never excludes an otherwise-good match.",
             )
-            if st.form_submit_button("Save profile", type="primary"):
-                profile = {
-                    "titles": _split_list(titles),
-                    "location": location.strip(),
-                    "keywords": _split_list(keywords),
-                    "exclude_keywords": _split_list(excludes),
-                }
-                storage.save_match_profile(profile)
+            st.markdown("**Required experience**")
+            st.caption("Filter by the minimum years of experience required in the job posting.")
+            min_col, max_col = st.columns(2)
+            with min_col:
+                min_years = st.number_input(
+                    "Min years", min_value=0, step=1, value=profile["min_experience_years"],
+                    key="match_min_years", placeholder="No limit",
+                )
+            with max_col:
+                max_years = st.number_input(
+                    "Max years", min_value=0, step=1, value=profile["max_experience_years"],
+                    key="match_max_years", placeholder="No limit",
+                )
+            if st.form_submit_button("Save search settings", type="primary"):
+                if min_years is not None and max_years is not None and min_years > max_years:
+                    st.error("Min years must be less than or equal to Max years.")
+                else:
+                    storage.save_match_profile({
+                        **profile,
+                        "titles": _split_list(titles),
+                        "location": location.strip(),
+                        "keywords": _split_list(keywords),
+                        "exclude_keywords": _split_list(excludes),
+                        "min_experience_years": min_years,
+                        "max_experience_years": max_years,
+                    })
+                    st.success("Saved.")
+
+    with st.expander("Filtering Settings", expanded=False):
+        st.caption("Fit scores always come from your resume on the Profile page.")
+        with st.form("match_filter_form", border=False):
+            min_fit_score = st.number_input(
+                "Minimum fit score", min_value=1, max_value=10, step=1, value=profile["min_fit_score"],
+                key="match_min_fit_score", placeholder="No limit",
+                help="Default for the \"Min fit\" filter above the match list - hides already-scored "
+                     "matches below this score. Doesn't change what gets collected, or how a fit score "
+                     "itself is computed or worded; you can still raise or lower it per-visit up there.",
+            )
+            if st.form_submit_button("Save filtering settings", type="primary"):
+                storage.save_match_profile({**profile, "min_fit_score": min_fit_score})
                 st.success("Saved.")
 
 
@@ -158,7 +209,7 @@ def _scan_gmail(profile: dict) -> None:
 def _search_google(profile: dict) -> None:
     queries = job_matching.search_queries(profile)
     if not queries:
-        st.error("Add at least one target title under \"What counts as a match\" first.")
+        st.error("Add at least one target title under \"Search Settings\" first.")
         return
     candidates = []
     with st.spinner(f"Searching Google Jobs ({len(queries)} search(es))..."):
@@ -217,10 +268,13 @@ def _render_card(record: dict) -> None:
             with icon_col:
                 st.markdown(layout.company_mark(record.get("company", "")), unsafe_allow_html=True)
             with info_col:
+                posting_status = record.get("posting_status") or storage.POSTING_STATUS_OPEN
+                posting_bit = posting_status if posting_status != storage.POSTING_STATUS_OPEN else None
                 meta = [b for b in [
                     f'<span class="jh-match-company" style="font-weight:700;">'
                     f'{record.get("company") or "Unknown company"}</span>',
                     record.get("location"), record.get("salary"), record.get("source"), record.get("date_found"),
+                    posting_bit,
                 ] if b]
                 st.markdown(
                     f'<div class="jh-match-title">{record.get("title") or "Untitled"}</div>'
@@ -349,7 +403,8 @@ def render() -> None:
                 )
             with filter_cols[2]:
                 min_fit = st.number_input(
-                    "Min fit", min_value=0, max_value=10, value=0, step=1, key="matches_min_fit"
+                    "Min fit", min_value=0, max_value=10, value=profile.get("min_fit_score") or 0, step=1,
+                    key="matches_min_fit",
                 )
 
         visible = [r for r in matches if (r.get("match_status") or storage.MATCH_STATUS_NEW) == status_filter]

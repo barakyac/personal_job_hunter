@@ -37,6 +37,11 @@ def render(show_header: bool = True) -> None:
             "notes": st.column_config.TextColumn("Notes"),
             "call_notes": st.column_config.TextColumn("Call Notes", width="large"),
             "description": st.column_config.TextColumn("Job Description", width="large"),
+            "fit_notes": st.column_config.TextColumn("Fit Notes", width="large"),
+            "fit_matched": st.column_config.TextColumn("Matches", width="large"),
+            "fit_required_gaps": st.column_config.TextColumn("Required Gaps", width="large"),
+            "fit_preferred_gaps": st.column_config.TextColumn("Preferred Gaps", width="large"),
+            "fit_unknowns": st.column_config.TextColumn("Not Mentioned In Resume", width="large"),
         },
     )
 

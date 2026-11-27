@@ -56,6 +56,49 @@ def test_description_button_opens_a_dialog_with_the_full_text():
     assert any("High" in m.value and "Backend" in m.value for m in at.markdown)
 
 
+def test_why_you_match_dialog_shows_evidence_backed_sections():
+    storage.save_matched([{
+        "company": "High", "title": "Backend", "link": "https://high.example",
+        "source": storage.MATCH_SOURCE_LINKEDIN, "match_status": storage.MATCH_STATUS_NEW, "fit_score": 9,
+        "fit_notes": "great", "fit_matched": "Python: 5 years on resume",
+        "fit_required_gaps": "AWS required; resume only shows GCP",
+        "fit_preferred_gaps": "Kubernetes preferred; not on resume",
+        "fit_unknowns": "On-call experience not mentioned",
+    }])
+    at = AppTest.from_function(_render).run()
+    button = next(b for b in at.button if b.key and b.key.startswith("match_score_open_"))
+    at = button.click().run()
+
+    assert not at.exception
+    text = "\n".join(m.value for m in at.markdown)
+    assert "Python: 5 years" in text
+    assert "AWS required" in text
+    assert "Kubernetes preferred" in text
+    assert "On-call experience not mentioned" in text
+
+
+def test_card_shows_closed_posting_status():
+    storage.save_matched([{
+        "company": "Gone Corp", "title": "Backend", "link": "https://gone-corp.example",
+        "source": storage.MATCH_SOURCE_LINKEDIN, "match_status": storage.MATCH_STATUS_NEW,
+        "posting_status": storage.POSTING_STATUS_CLOSED,
+    }])
+    at = AppTest.from_function(_render).run()
+    assert not at.exception
+    assert any(storage.POSTING_STATUS_CLOSED in m.value for m in at.markdown)
+
+
+def test_card_hides_posting_status_when_open():
+    storage.save_matched([{
+        "company": "Fine Corp", "title": "Backend", "link": "https://fine-corp.example",
+        "source": storage.MATCH_SOURCE_LINKEDIN, "match_status": storage.MATCH_STATUS_NEW,
+        "posting_status": storage.POSTING_STATUS_OPEN,
+    }])
+    at = AppTest.from_function(_render).run()
+    assert not at.exception
+    assert not any(storage.POSTING_STATUS_OPEN in m.value for m in at.markdown)
+
+
 def test_save_button_moves_match_to_saved_jobs():
     _seed()
     at = AppTest.from_function(_render).run()
@@ -149,9 +192,103 @@ def test_saving_profile_persists_lists():
     at.text_input(key="match_titles").set_value("Backend Engineer, AI Infrastructure Engineer")
     at.text_input(key="match_location").set_value("Tel Aviv, Israel")
     at.text_input(key="match_excludes").set_value("frontend")
-    at.button[[b.label for b in at.button].index("Save profile")].click().run()
+    at.button[[b.label for b in at.button].index("Save search settings")].click().run()
     assert not at.exception
     profile = storage.load_match_profile()
     assert profile["titles"] == ["Backend Engineer", "AI Infrastructure Engineer"]
     assert profile["location"] == "Tel Aviv, Israel"
     assert profile["exclude_keywords"] == ["frontend"]
+
+
+def test_saving_profile_persists_experience_bounds():
+    at = AppTest.from_function(_render).run()
+    at.number_input(key="match_min_years").set_value(3)
+    at.number_input(key="match_max_years").set_value(6)
+    at.button[[b.label for b in at.button].index("Save search settings")].click().run()
+
+    assert not at.exception
+    profile = storage.load_match_profile()
+    assert profile["min_experience_years"] == 3
+    assert profile["max_experience_years"] == 6
+
+
+def test_experience_bounds_persist_after_reload():
+    storage.save_match_profile(
+        {**storage.DEFAULT_MATCH_PROFILE, "min_experience_years": 3, "max_experience_years": 6}
+    )
+    at = AppTest.from_function(_render).run()
+    assert not at.exception
+    assert at.number_input(key="match_min_years").value == 3
+    assert at.number_input(key="match_max_years").value == 6
+
+
+def test_saving_profile_rejects_min_greater_than_max():
+    at = AppTest.from_function(_render).run()
+    at.number_input(key="match_min_years").set_value(6)
+    at.number_input(key="match_max_years").set_value(3)
+    at = at.button[[b.label for b in at.button].index("Save search settings")].click().run()
+
+    assert not at.exception
+    assert any("Min years must be" in e.value for e in at.error)
+    # The invalid combination must never be persisted.
+    profile = storage.load_match_profile()
+    assert profile["min_experience_years"] is None
+    assert profile["max_experience_years"] is None
+
+
+def test_saving_profile_with_untouched_experience_fields_means_no_limit():
+    # AppTest's NumberInput.set_value(None) can't simulate clearing an
+    # already-populated field back to blank (a harness limitation, not an
+    # app one) - this instead confirms the natural blank-by-default path:
+    # submitting the form without ever touching the experience fields saves
+    # no limit, same as before this feature existed.
+    at = AppTest.from_function(_render).run()
+    assert at.number_input(key="match_min_years").value is None
+    assert at.number_input(key="match_max_years").value is None
+
+    at.text_input(key="match_titles").set_value("Backend Engineer")
+    at.button[[b.label for b in at.button].index("Save search settings")].click().run()
+
+    assert not at.exception
+    profile = storage.load_match_profile()
+    assert profile["min_experience_years"] is None
+    assert profile["max_experience_years"] is None
+
+
+def test_saving_profile_persists_min_fit_score():
+    at = AppTest.from_function(_render).run()
+    at.number_input(key="match_min_fit_score").set_value(6)
+    at.button[[b.label for b in at.button].index("Save filtering settings")].click().run()
+
+    assert not at.exception
+    assert storage.load_match_profile()["min_fit_score"] == 6
+
+
+def test_min_fit_score_persists_after_reload():
+    storage.save_match_profile({**storage.DEFAULT_MATCH_PROFILE, "min_fit_score": 6})
+    at = AppTest.from_function(_render).run()
+    assert not at.exception
+    assert at.number_input(key="match_min_fit_score").value == 6
+
+
+def test_profile_min_fit_score_sets_the_toolbar_filter_default_and_hides_low_scores():
+    # min_fit_score only ever pre-fills the toolbar's own "Min fit" number
+    # input (session-only, like status/source) - it never touches what
+    # add_candidates() collects, so this is the one place it should have
+    # any visible effect: the match list itself.
+    storage.save_match_profile({**storage.DEFAULT_MATCH_PROFILE, "min_fit_score": 6})
+    _seed()
+    at = AppTest.from_function(_render).run()
+    assert not at.exception
+    assert at.number_input(key="matches_min_fit").value == 6
+    markdown = [m.value for m in at.markdown if "font-weight:700" in m.value]
+    assert len(markdown) == 1 and "High" in markdown[0]
+
+
+def test_min_fit_score_unset_does_not_filter_the_toolbar_by_default():
+    _seed()
+    at = AppTest.from_function(_render).run()
+    assert not at.exception
+    assert at.number_input(key="matches_min_fit").value == 0
+    markdown = [m.value for m in at.markdown if "font-weight:700" in m.value]
+    assert len(markdown) == 2

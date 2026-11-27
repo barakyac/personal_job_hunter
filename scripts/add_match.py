@@ -57,7 +57,9 @@ def main(argv: list[str] | None = None) -> dict:
     counts = job_matching.add_candidates(jobs, SOURCES[args.source])
     print(
         f"Added {counts['added']} to Matching Jobs; skipped {counts['already_tracked']} already tracked, "
-        f"{counts['filtered']} excluded by profile keywords, {counts['invalid']} missing company/link."
+        f"{counts['filtered']} excluded by profile keywords, {counts['experience_filtered']} outside the "
+        f"required-experience range, {counts['experience_unknown']} with unclear required experience, "
+        f"{counts['invalid']} missing company/link."
     )
     return counts
 
