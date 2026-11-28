@@ -2,7 +2,7 @@ from datetime import date
 
 from streamlit.testing.v1 import AppTest
 
-from src import fit_analysis, job_extract, storage
+from src import fit_analysis, job_extract, saved_view, storage
 
 
 def _render_saved():
@@ -40,6 +40,25 @@ def test_paste_popover_creates_saved_position(monkeypatch):
     assert records[0]["description"] == "We are Acme, hiring a Backend Engineer."
     assert records[0]["link"] == "https://acme.example/jobs/1"
     assert records[0]["posting_status"] == storage.POSTING_STATUS_OPEN
+
+
+def test_fit_help_shows_truncated_notes_even_with_no_fit_detail_fields():
+    # Regression guard: _fit_tooltip() returns exactly fit_notes back for a
+    # record with no matched/required_gaps/preferred_gaps/unknowns fields
+    # (e.g. one scored before those fields existed) - comparing that
+    # against the full notes (rather than the truncated `preview` actually
+    # shown on the card) used to suppress the hover tooltip entirely for
+    # long notes, leaving no way to read the rest.
+    long_notes = "A" * 200
+    record = {"fit_notes": long_notes}
+    preview = long_notes[:107] + "..."
+
+    assert saved_view._fit_help(record, preview) == long_notes
+
+
+def test_fit_help_is_none_when_nothing_is_truncated():
+    record = {"fit_notes": "Short note."}
+    assert saved_view._fit_help(record, "Short note.") is None
 
 
 def test_unverified_fields_warning_lists_the_flagged_fields():
@@ -227,6 +246,45 @@ def test_mark_closed_button_marks_position_closed():
     saved = storage.load_saved()
     assert len(saved) == 1
     assert saved[0]["posting_status"] == storage.POSTING_STATUS_CLOSED
+
+
+def test_unknown_posting_status_shows_a_caption_without_disabling_actions():
+    storage.save_saved([{
+        "company": "Acme", "title": "Backend", "link": "",
+        "posting_status": storage.POSTING_STATUS_UNKNOWN, "date_saved": "2026-01-01",
+    }])
+
+    at = AppTest.from_function(_render_saved).run()
+
+    assert not at.exception
+    assert any("Couldn't confirm it's still open" in c.value for c in at.caption)
+    # Unlike a confirmed-closed posting, "unknown" is informational only -
+    # it must never disable row actions the way a confirmed closed does.
+    assert not next(b for b in at.button if b.key == "mark_applied_row_Acme_Backend_0").disabled
+
+
+def test_bulk_edit_round_trip_preserves_fit_detail_and_checked_at_fields():
+    # Regression guard: to_dataframe/from_dataframe round-trip only keeps
+    # whatever's in storage.SAVED_COLUMNS - a field left out of that list
+    # would be silently dropped the moment someone clicks "Save changes"
+    # without even touching the grid.
+    storage.save_saved([{
+        "company": "Acme", "title": "Backend", "link": "", "date_saved": "2026-01-01",
+        "posting_status": storage.POSTING_STATUS_CLOSED, "posting_checked_at": "2026-11-20",
+        "fit_matched": "Python: matches", "fit_required_gaps": "AWS: gap",
+        "fit_preferred_gaps": "K8s: gap", "fit_unknowns": "On-call: unknown",
+    }])
+
+    at = AppTest.from_function(_render_saved).run()
+    at.button(key="save_saved_btn").click().run()
+
+    assert not at.exception
+    [saved] = storage.load_saved()
+    assert saved["posting_checked_at"] == "2026-11-20"
+    assert saved["fit_matched"] == "Python: matches"
+    assert saved["fit_required_gaps"] == "AWS: gap"
+    assert saved["fit_preferred_gaps"] == "K8s: gap"
+    assert saved["fit_unknowns"] == "On-call: unknown"
 
 
 def test_closed_posting_hidden_by_default_toggle():

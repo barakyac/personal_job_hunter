@@ -1,4 +1,7 @@
+import re
+
 import pandas as pd
+import pytest
 
 from src import storage
 
@@ -40,6 +43,51 @@ def test_save_and_load_applied_positions_roundtrip():
 
 def test_load_saved_missing_file_returns_empty_list():
     assert storage.load_saved() == []
+
+
+def test_load_saved_raises_runtime_error_naming_the_backup_dir_on_corrupt_json():
+    # Regression test: a truncated/corrupt file (an interrupted write, a
+    # full disk) used to let the bare json.JSONDecodeError propagate - this
+    # confirms it's now a clear RuntimeError pointing at where the rolling
+    # backup copy (see storage._save) can be recovered from.
+    storage.data_dir().mkdir(parents=True, exist_ok=True)
+    path = storage.data_dir() / "saved_positions.json"
+    path.write_text("{not valid json", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=re.escape(str(storage.backup_dir()))):
+        storage.load_saved()
+
+
+def test_load_saved_raises_runtime_error_on_invalid_utf8_bytes():
+    # UnicodeDecodeError (from invalid-UTF-8 bytes) isn't a JSONDecodeError
+    # or OSError - it needs its own entry in _load's except tuple, or this
+    # case falls through as a bare, un-actionable traceback.
+    storage.data_dir().mkdir(parents=True, exist_ok=True)
+    path = storage.data_dir() / "saved_positions.json"
+    path.write_bytes(b"\xff\xfe[")
+
+    with pytest.raises(RuntimeError, match=re.escape(str(storage.backup_dir()))):
+        storage.load_saved()
+
+
+def test_load_match_profile_falls_back_to_defaults_on_invalid_utf8_bytes():
+    # Same UnicodeDecodeError gap as _load, but load_match_profile()'s own
+    # contract (unlike _load's) is to fall back to defaults rather than
+    # raise, since matches_view.render() calls this as the very first thing
+    # it does and a corrupt profile must not take down the whole page.
+    storage.data_dir().mkdir(parents=True, exist_ok=True)
+    path = storage.data_dir() / "match_profile.json"
+    path.write_bytes(b"\xff\xfe[")
+
+    assert storage.load_match_profile() == storage.DEFAULT_MATCH_PROFILE
+
+
+def test_load_match_profile_falls_back_to_defaults_when_json_is_not_an_object():
+    storage.data_dir().mkdir(parents=True, exist_ok=True)
+    path = storage.data_dir() / "match_profile.json"
+    path.write_text("[]", encoding="utf-8")
+
+    assert storage.load_match_profile() == storage.DEFAULT_MATCH_PROFILE
 
 
 def test_resume_save_and_load_roundtrip():

@@ -84,8 +84,7 @@ def _analyze_one(record: dict) -> None:
     except ollama_client.OllamaError as exc:
         st.error(str(exc))
         return
-    records[idx]["fit_score"] = result["fit_score"]
-    records[idx]["fit_notes"] = result["fit_notes"]
+    records[idx].update(result)
     storage.save_saved(records)
     st.success(f"Scored {records[idx].get('company', 'this position')}.")
     st.rerun()
@@ -209,8 +208,37 @@ def _render_add_job_popover() -> None:
                         st.rerun()
 
 
+def _fit_tooltip(record: dict) -> str:
+    """The full fit breakdown (notes + matched/gaps/unknowns), for the
+    truncated preview's hover tooltip - same evidence-backed sections the
+    Matching Jobs page shows in its "Why you match" dialog."""
+    sections = [
+        ("Matches", record.get("fit_matched")),
+        ("Required gaps", record.get("fit_required_gaps")),
+        ("Preferred gaps", record.get("fit_preferred_gaps")),
+        ("Not mentioned in the resume", record.get("fit_unknowns")),
+    ]
+    parts = [record.get("fit_notes") or ""]
+    for label, text in sections:
+        if text:
+            parts.append(f"{label}:\n{text}")
+    return "\n\n".join(p for p in parts if p)
+
+
+def _fit_help(record: dict, preview: str) -> str | None:
+    """None when there's nothing beyond what `preview` (the truncated text
+    actually shown on the card) already shows - compared against `preview`,
+    not the full fit_notes: a record with no fit-detail fields makes
+    _fit_tooltip() return exactly fit_notes back, which would otherwise
+    suppress the tooltip even when `preview` had truncated it, leaving long
+    notes with no way to read the rest."""
+    tooltip = _fit_tooltip(record)
+    return tooltip if tooltip != preview else None
+
+
 def _render_row(record: dict, row_key: str) -> None:
-    closed = record.get("posting_status", storage.POSTING_STATUS_OPEN) == storage.POSTING_STATUS_CLOSED
+    posting_status = record.get("posting_status", storage.POSTING_STATUS_OPEN)
+    closed = posting_status == storage.POSTING_STATUS_CLOSED
 
     with st.container(border=True):
         info_col, fit_col, applied_col, analyze_col, open_col, more_col = st.columns(
@@ -226,6 +254,8 @@ def _render_row(record: dict, row_key: str) -> None:
             meta_bits = [b for b in [record.get("location"), record.get("date_saved")] if b]
             if closed:
                 meta_bits.append("Closed for applications")
+            elif posting_status == storage.POSTING_STATUS_UNKNOWN:
+                meta_bits.append("Couldn't confirm it's still open")
             if meta_bits:
                 st.caption(" · ".join(meta_bits))
 
@@ -236,7 +266,7 @@ def _render_row(record: dict, row_key: str) -> None:
                 notes = record.get("fit_notes") or ""
                 if notes:
                     preview = notes if len(notes) <= 110 else notes[:107] + "..."
-                    st.caption(preview, help=notes if len(notes) > 110 else None)
+                    st.caption(preview, help=_fit_help(record, preview))
             else:
                 st.caption("Not scored yet")
 
@@ -314,7 +344,7 @@ def render() -> None:
 
     with st.expander("Bulk edit table (advanced)"):
         st.caption("Edit any field directly in the grid, including ones not shown on the cards above.")
-        df = storage.to_dataframe(saved, storage.SAVED_COLUMNS, date_cols=["date_saved"])
+        df = storage.to_dataframe(saved, storage.SAVED_COLUMNS, date_cols=["date_saved", "posting_checked_at"])
         edited = st.data_editor(
             df,
             num_rows="dynamic",
@@ -330,17 +360,22 @@ def render() -> None:
                     "Status", options=storage.POSTING_STATUS_OPTIONS, default=storage.POSTING_STATUS_OPEN,
                     required=True,
                 ),
+                "posting_checked_at": st.column_config.DateColumn("Status Checked"),
                 "date_saved": st.column_config.DateColumn("Date Saved", default=date.today()),
                 "notes": st.column_config.TextColumn("Notes"),
                 "description": st.column_config.TextColumn("Job Description", width="large"),
                 "fit_score": st.column_config.NumberColumn("Fit Score", min_value=1, max_value=10, step=1),
                 "fit_notes": st.column_config.TextColumn("Fit Notes", width="large"),
+                "fit_matched": st.column_config.TextColumn("Matches", width="large"),
+                "fit_required_gaps": st.column_config.TextColumn("Required Gaps", width="large"),
+                "fit_preferred_gaps": st.column_config.TextColumn("Preferred Gaps", width="large"),
+                "fit_unknowns": st.column_config.TextColumn("Not Mentioned In Resume", width="large"),
             },
         )
 
         unsaved = not edited.equals(df)
         if st.button("Save changes", key="save_saved_btn", type="primary"):
-            records = storage.from_dataframe(edited, date_cols=["date_saved"])
+            records = storage.from_dataframe(edited, date_cols=["date_saved", "posting_checked_at"])
             storage.save_saved(records)
             st.success(f"Saved {len(records)} position(s).")
             st.rerun()
@@ -382,8 +417,7 @@ def _run_bulk_fit_analysis() -> None:
             # not all held back for a single save at the end, so progress
             # survives an interruption and earlier results are visible
             # right away.
-            records[i]["fit_score"] = result["fit_score"]
-            records[i]["fit_notes"] = result["fit_notes"]
+            records[i].update(result)
             storage.save_saved(records)
         progress.progress((n + 1) / len(targets))
 

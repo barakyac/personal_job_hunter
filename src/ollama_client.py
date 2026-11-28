@@ -50,9 +50,19 @@ def chat_json(system: str, user: str, model: str = DEFAULT_MODEL, timeout: int =
         timeout,
     )
     try:
-        return json.loads(content)
+        parsed = json.loads(content)
     except json.JSONDecodeError as exc:
         raise OllamaError(f"Ollama returned non-JSON content: {content!r}") from exc
+    if not isinstance(parsed, dict):
+        # json.loads happily parses a list, number, string or null as valid
+        # JSON - none of which is the object every caller here expects and
+        # immediately calls .get(...) on. Surfacing that as an OllamaError
+        # (instead of letting an AttributeError/TypeError leak from deep
+        # inside a caller) keeps it inside whichever try/except that caller
+        # already has around this call, so one bad response reports as one
+        # error instead of crashing an entire batch.
+        raise OllamaError(f"Ollama returned {type(parsed).__name__}, expected a JSON object: {parsed!r}")
+    return parsed
 
 
 def chat(messages: list[dict], model: str = DEFAULT_MODEL, timeout: int = 300) -> str:

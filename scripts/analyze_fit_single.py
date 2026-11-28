@@ -57,8 +57,7 @@ def main() -> None:
         print(f"FAILED: {exc}")
         return
 
-    records[idx]["fit_score"] = result["fit_score"]
-    records[idx]["fit_notes"] = result["fit_notes"]
+    records[idx].update(result)
     saver(records)
 
     print(f"score={result['fit_score']}")

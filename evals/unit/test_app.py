@@ -4,7 +4,7 @@ from streamlit.testing.v1 import AppTest
 
 APP_PATH = Path(__file__).resolve().parent.parent.parent / "app.py"
 
-NAV_PAGES = ["Applications", "Saved Jobs", "Mail Inbox", "Profile"]
+NAV_PAGES = ["Applications", "Matching Jobs", "Saved Jobs", "Mail Inbox", "Profile"]
 
 
 def test_assistant_hidden_by_default():

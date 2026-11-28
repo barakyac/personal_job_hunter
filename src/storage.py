@@ -41,6 +41,14 @@ def _resume_file() -> Path:
     return data_dir() / "resume.md"
 
 
+def _matched_file() -> Path:
+    return data_dir() / "matched_jobs.json"
+
+
+def _match_profile_file() -> Path:
+    return data_dir() / "match_profile.json"
+
+
 def personal_dir() -> Path:
     return data_dir() / "personal"
 
@@ -77,24 +85,44 @@ STATUS_COLORS = {
 # stage (Applied, Interview, ...) once they've applied.
 POSTING_STATUS_OPEN = "Open for applications"
 POSTING_STATUS_CLOSED = "Closed for applications"
-POSTING_STATUS_OPTIONS = [POSTING_STATUS_OPEN, POSTING_STATUS_CLOSED]
+# A posting whose status couldn't actually be established - a failed check
+# (sign-in wall, CAPTCHA, timeout), never a guess. Distinct from OPEN/CLOSED
+# so a failed check can't be confused with a real confirmation of either.
+POSTING_STATUS_UNKNOWN = "Unknown"
+POSTING_STATUS_OPTIONS = [POSTING_STATUS_OPEN, POSTING_STATUS_CLOSED, POSTING_STATUS_UNKNOWN]
+
+# Fields every fit-scoring result (src/fit_analysis.py) carries, beyond the
+# score itself.
+FIT_DETAIL_COLUMNS = ["fit_matched", "fit_required_gaps", "fit_preferred_gaps", "fit_unknowns"]
 
 SAVED_COLUMNS = [
-    "company", "title", "link", "location", "salary", "posting_status", "date_saved", "notes",
-    "description", "fit_score", "fit_notes",
+    "company", "title", "link", "location", "salary", "posting_status", "posting_checked_at",
+    "date_saved", "notes", "description", "fit_score", "fit_notes", *FIT_DETAIL_COLUMNS,
+    "required_years_min",
 ]
 APPLIED_COLUMNS = [
     "company", "title", "link", "location", "salary",
     "date_saved", "date_applied", "status", "rejected_from_stage", "notes",
-    "call_notes", "description", "fit_score", "fit_notes",
+    "call_notes", "description", "fit_score", "fit_notes", *FIT_DETAIL_COLUMNS, "required_years_min",
 ]
 
 
 def _load(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+        # Unlike load_match_profile(), returning [] here would be read as
+        # "no records" and could invite the user to treat what they think is
+        # an empty list as a fresh start - silently masking real data loss
+        # from a truncated/corrupt file (an interrupted write, a full disk).
+        # _save() keeps a pre-overwrite copy in backup_dir(), so point there.
+        raise RuntimeError(
+            f"{path.name} is corrupted or unreadable ({exc}). A backup from before the last write "
+            f"may be at {backup_dir() / path.name} - restore it manually if needed."
+        ) from exc
 
 
 def _save(path: Path, records: list[dict]) -> None:
@@ -124,6 +152,92 @@ def load_applied() -> list[dict]:
 
 def save_applied(records: list[dict]) -> None:
     _save(_applied_file(), records)
+
+
+# Matching Jobs: candidate postings found by a source (Gmail job alerts,
+# Google Jobs search, or Claude browsing LinkedIn/Google in Chrome) that the
+# user hasn't decided on yet. Kept separate from saved_positions.json so a
+# scan that pulls in 30 maybe-relevant jobs never floods Saved Jobs - a
+# match only becomes a Saved Position when the user picks it.
+MATCH_STATUS_NEW = "New"
+MATCH_STATUS_SAVED = "Saved"
+MATCH_STATUS_APPLIED = "Applied"
+MATCH_STATUS_DISMISSED = "Dismissed"
+MATCH_STATUS_OPTIONS = [MATCH_STATUS_NEW, MATCH_STATUS_SAVED, MATCH_STATUS_APPLIED, MATCH_STATUS_DISMISSED]
+
+MATCH_SOURCE_GMAIL = "Gmail alert"
+MATCH_SOURCE_GOOGLE = "Google Jobs"
+MATCH_SOURCE_LINKEDIN = "LinkedIn (Claude)"
+MATCH_SOURCE_GOOGLE_CLAUDE = "Google (Claude)"
+MATCH_SOURCE_OPTIONS = [MATCH_SOURCE_GMAIL, MATCH_SOURCE_GOOGLE, MATCH_SOURCE_LINKEDIN, MATCH_SOURCE_GOOGLE_CLAUDE]
+
+MATCHED_COLUMNS = [
+    "company", "title", "link", "location", "salary", "source", "source_detail",
+    "date_found", "match_status", "posting_status", "posting_checked_at",
+    "description", "fit_score", "fit_notes", *FIT_DETAIL_COLUMNS, "required_years_min",
+]
+
+DEFAULT_MATCH_PROFILE = {
+    "titles": [],
+    "location": "",
+    "keywords": [],
+    "exclude_keywords": [],
+    # None means "no limit" for that bound - an existing profile saved
+    # before these fields existed loads as None/None here, i.e. no
+    # experience filter at all. These describe which postings to collect,
+    # never the user's own experience - fit scoring is a separate concern
+    # (see src/fit_analysis.py) and never reads these.
+    "min_experience_years": None,
+    "max_experience_years": None,
+    # None means "no limit" here too. Unlike the experience bounds above,
+    # this is purely a Matching Jobs page display filter (see
+    # matches_view.render()) - it hides already-scored matches below this
+    # score from the list, but never affects what add_candidates() collects
+    # or how a fit score itself is computed or worded.
+    "min_fit_score": None,
+}
+
+
+def load_matched() -> list[dict]:
+    return _load(_matched_file())
+
+
+def save_matched(records: list[dict]) -> None:
+    _save(_matched_file(), records)
+
+
+def load_match_profile() -> dict:
+    """What "matches your profile" means for searches: target titles, a
+    location and optional keywords. Every key is always present, even for
+    a file written before a key existed."""
+    stored = {}
+    if _match_profile_file().exists():
+        try:
+            with _match_profile_file().open("r", encoding="utf-8") as f:
+                stored = json.load(f) or {}
+            if not isinstance(stored, dict):
+                stored = {}
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            # A truncated/corrupt file (an interrupted write, a full disk)
+            # must not permanently break the whole Matching Jobs page, which
+            # calls this as the very first thing it does - fall back to
+            # defaults instead of letting the error propagate out of here.
+            stored = {}
+    return {**DEFAULT_MATCH_PROFILE, **{k: v for k, v in stored.items() if k in DEFAULT_MATCH_PROFILE}}
+
+
+def save_match_profile(profile: dict) -> None:
+    data_dir().mkdir(parents=True, exist_ok=True)
+    clean = {k: profile.get(k, v) for k, v in DEFAULT_MATCH_PROFILE.items()}
+    path = _match_profile_file()
+    # Same rolling-backup-before-overwrite insurance _save() gives every
+    # other record file, so a bad write here has the same recovery path.
+    if path.exists():
+        dest = backup_dir()
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, dest / path.name)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(clean, f, indent=2)
 
 
 def load_resume() -> str:
@@ -201,7 +315,7 @@ def find_record_index(records: list[dict], company: str, title: str = "", link: 
     return None
 
 
-NUMERIC_COLUMNS = {"fit_score"}
+NUMERIC_COLUMNS = {"fit_score", "required_years_min"}
 
 # Text columns whose missing/blank value should default to something other
 # than "" - e.g. a record saved before posting_status existed, or added via
