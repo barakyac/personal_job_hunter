@@ -21,6 +21,30 @@ def _seed():
     ])
 
 
+def test_scanning_gmail_shows_the_new_match_in_the_same_run(monkeypatch):
+    # Regression guard: render() used to load `matches` before the Scan/
+    # Search buttons in _render_header ran, so a successful scan's new
+    # record (and the "Added N new match(es)" message above it) wasn't
+    # reflected in the toolbar counts or the card list until an unrelated
+    # later rerun. render() now re-reads `matches` after the header runs.
+    from src import gmail_client, job_matching
+
+    monkeypatch.setattr(gmail_client, "is_connected", lambda: True)
+    monkeypatch.setattr(
+        job_matching, "gmail_alert_candidates",
+        lambda on_progress=None: (
+            [{"company": "Fresh", "title": "Backend Engineer", "link": "https://fresh.example"}], [],
+        ),
+    )
+
+    at = AppTest.from_function(_render).run()
+    at = at.button(key="match_scan_gmail_btn").click().run()
+
+    assert not at.exception
+    assert any("Added 1 new match" in s.value for s in at.success)
+    assert any("Fresh" in md.value for md in at.markdown)
+
+
 def test_empty_state_renders():
     at = AppTest.from_function(_render).run()
     assert not at.exception

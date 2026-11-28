@@ -92,9 +92,7 @@ POSTING_STATUS_UNKNOWN = "Unknown"
 POSTING_STATUS_OPTIONS = [POSTING_STATUS_OPEN, POSTING_STATUS_CLOSED, POSTING_STATUS_UNKNOWN]
 
 # Fields every fit-scoring result (src/fit_analysis.py) carries, beyond the
-# score itself - see job_matching.apply_posting_check() for the one place
-# that decides how a posting-status check updates posting_status/
-# posting_checked_at without ever regressing an earlier confirmation.
+# score itself.
 FIT_DETAIL_COLUMNS = ["fit_matched", "fit_required_gaps", "fit_preferred_gaps", "fit_unknowns"]
 
 SAVED_COLUMNS = [
@@ -112,8 +110,19 @@ APPLIED_COLUMNS = [
 def _load(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+        # Unlike load_match_profile(), returning [] here would be read as
+        # "no records" and could invite the user to treat what they think is
+        # an empty list as a fresh start - silently masking real data loss
+        # from a truncated/corrupt file (an interrupted write, a full disk).
+        # _save() keeps a pre-overwrite copy in backup_dir(), so point there.
+        raise RuntimeError(
+            f"{path.name} is corrupted or unreadable ({exc}). A backup from before the last write "
+            f"may be at {backup_dir() / path.name} - restore it manually if needed."
+        ) from exc
 
 
 def _save(path: Path, records: list[dict]) -> None:
@@ -206,7 +215,9 @@ def load_match_profile() -> dict:
         try:
             with _match_profile_file().open("r", encoding="utf-8") as f:
                 stored = json.load(f) or {}
-        except (json.JSONDecodeError, OSError):
+            if not isinstance(stored, dict):
+                stored = {}
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             # A truncated/corrupt file (an interrupted write, a full disk)
             # must not permanently break the whole Matching Jobs page, which
             # calls this as the very first thing it does - fall back to

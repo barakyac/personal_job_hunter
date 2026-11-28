@@ -2,7 +2,7 @@ from datetime import date
 
 from streamlit.testing.v1 import AppTest
 
-from src import fit_analysis, job_extract, storage
+from src import fit_analysis, job_extract, saved_view, storage
 
 
 def _render_saved():
@@ -40,6 +40,25 @@ def test_paste_popover_creates_saved_position(monkeypatch):
     assert records[0]["description"] == "We are Acme, hiring a Backend Engineer."
     assert records[0]["link"] == "https://acme.example/jobs/1"
     assert records[0]["posting_status"] == storage.POSTING_STATUS_OPEN
+
+
+def test_fit_help_shows_truncated_notes_even_with_no_fit_detail_fields():
+    # Regression guard: _fit_tooltip() returns exactly fit_notes back for a
+    # record with no matched/required_gaps/preferred_gaps/unknowns fields
+    # (e.g. one scored before those fields existed) - comparing that
+    # against the full notes (rather than the truncated `preview` actually
+    # shown on the card) used to suppress the hover tooltip entirely for
+    # long notes, leaving no way to read the rest.
+    long_notes = "A" * 200
+    record = {"fit_notes": long_notes}
+    preview = long_notes[:107] + "..."
+
+    assert saved_view._fit_help(record, preview) == long_notes
+
+
+def test_fit_help_is_none_when_nothing_is_truncated():
+    record = {"fit_notes": "Short note."}
+    assert saved_view._fit_help(record, "Short note.") is None
 
 
 def test_unverified_fields_warning_lists_the_flagged_fields():

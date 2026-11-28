@@ -97,7 +97,7 @@ def test_analyze_with_posting_text_raises_ollama_error_on_a_malformed_evidence_f
     # fields (a real risk from a local model under format:"json") used to
     # raise a bare TypeError from inside _join_items's iteration - caught
     # nowhere, indistinguishable from an unrelated bug, and (via
-    # job_matching.score_matches's loop) silently aborting every other
+    # job_matching.score_matches's loop) crashing and aborting every other
     # record still waiting to be scored in the same batch.
     monkeypatch.setattr(
         ollama_client, "chat_json", lambda *a, **k: {"score": 5, "notes": "ok", "matched": True}
@@ -105,6 +105,38 @@ def test_analyze_with_posting_text_raises_ollama_error_on_a_malformed_evidence_f
 
     with pytest.raises(ollama_client.OllamaError, match="Expected a list"):
         fit_analysis.analyze_with_posting_text("resume", {"company": "Acme"}, "")
+
+
+def test_analyze_with_posting_text_raises_ollama_error_when_score_is_missing(monkeypatch):
+    # Regression test: a syntactically valid JSON object missing "score"
+    # (a real failure mode for a local model under format:"json", e.g. mid-
+    # response truncation) used to pass through silently as
+    # fit_score=None, indistinguishable from a real but low score.
+    monkeypatch.setattr(ollama_client, "chat_json", lambda *a, **k: {"notes": "ok"})
+
+    with pytest.raises(ollama_client.OllamaError, match="score"):
+        fit_analysis.analyze_with_posting_text("resume", {"company": "Acme"}, "")
+
+
+@pytest.mark.parametrize("bad_score", ["not a number", 0, 11, None])
+def test_analyze_with_posting_text_raises_ollama_error_on_an_out_of_range_score(monkeypatch, bad_score):
+    monkeypatch.setattr(ollama_client, "chat_json", lambda *a, **k: {"score": bad_score, "notes": "ok"})
+
+    with pytest.raises(ollama_client.OllamaError, match="score"):
+        fit_analysis.analyze_with_posting_text("resume", {"company": "Acme"}, "")
+
+
+def test_analyze_many_collects_a_missing_score_as_an_error_without_aborting_the_batch(monkeypatch):
+    responses = iter([{"notes": "no score here"}, {"score": 6, "notes": "fine"}])
+    monkeypatch.setattr(ollama_client, "chat_json", lambda *a, **k: next(responses))
+    monkeypatch.setattr(fit_analysis, "fetch_posting_text", lambda link, timeout=10: "")
+
+    records = [{"company": "Acme", "link": ""}, {"company": "Globex", "link": ""}]
+    errors = fit_analysis.analyze_many("resume", records, [0, 1])
+
+    assert len(errors) == 1 and "Acme" in errors[0]
+    assert records[0].get("fit_score") is None
+    assert records[1]["fit_score"] == 6
 
 
 def test_analyze_uses_stored_description_without_fetching(monkeypatch):

@@ -250,7 +250,9 @@ def _scan_gmail(profile: dict) -> None:
     status_box.empty()
     for error in errors:
         st.warning(error)
-    _report(job_matching.add_candidates(candidates, storage.MATCH_SOURCE_GMAIL, profile), "job-alert emails")
+    with st.spinner("Scoring new matches..."):
+        counts = job_matching.add_candidates(candidates, storage.MATCH_SOURCE_GMAIL, profile)
+    _report(counts, "job-alert emails")
 
 
 def _search_google(profile: dict) -> None:
@@ -265,7 +267,9 @@ def _search_google(profile: dict) -> None:
                 candidates.extend(job_search_client.search_jobs(query, profile["location"]))
             except job_search_client.JobSearchError as exc:
                 st.warning(f"{query}: {exc}")
-    _report(job_matching.add_candidates(candidates, storage.MATCH_SOURCE_GOOGLE, profile), "Google Jobs")
+    with st.spinner("Scoring new matches..."):
+        counts = job_matching.add_candidates(candidates, storage.MATCH_SOURCE_GOOGLE, profile)
+    _report(counts, "Google Jobs")
 
 
 def _score(targets: list[dict]) -> None:
@@ -449,6 +453,13 @@ def render() -> None:
         _render_header(profile, unscored)
         _render_profile_editor(profile)
 
+        # Re-read: the Scan/Search buttons in _render_header just ran above,
+        # in this same script run, and may have added new records - without
+        # this, the toolbar counts and the list below would still show the
+        # `matches` snapshot from before those buttons were clicked, and the
+        # user's "Added N new match(es)" success message would show a list
+        # that doesn't yet contain them until the next unrelated rerun.
+        matches = storage.load_matched()
         counts = {s: sum(1 for r in matches if (r.get("match_status") or storage.MATCH_STATUS_NEW) == s)
                   for s in storage.MATCH_STATUS_OPTIONS}
         with st.container(key="matches_toolbar"):

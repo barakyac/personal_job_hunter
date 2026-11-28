@@ -225,6 +225,17 @@ def _fit_tooltip(record: dict) -> str:
     return "\n\n".join(p for p in parts if p)
 
 
+def _fit_help(record: dict, preview: str) -> str | None:
+    """None when there's nothing beyond what `preview` (the truncated text
+    actually shown on the card) already shows - compared against `preview`,
+    not the full fit_notes: a record with no fit-detail fields makes
+    _fit_tooltip() return exactly fit_notes back, which would otherwise
+    suppress the tooltip even when `preview` had truncated it, leaving long
+    notes with no way to read the rest."""
+    tooltip = _fit_tooltip(record)
+    return tooltip if tooltip != preview else None
+
+
 def _render_row(record: dict, row_key: str) -> None:
     posting_status = record.get("posting_status", storage.POSTING_STATUS_OPEN)
     closed = posting_status == storage.POSTING_STATUS_CLOSED
@@ -253,10 +264,9 @@ def _render_row(record: dict, row_key: str) -> None:
             if fit_score not in (None, ""):
                 st.markdown(f"Fit: **{fit_score}**/10")
                 notes = record.get("fit_notes") or ""
-                tooltip = _fit_tooltip(record)
                 if notes:
                     preview = notes if len(notes) <= 110 else notes[:107] + "..."
-                    st.caption(preview, help=tooltip if tooltip != notes else None)
+                    st.caption(preview, help=_fit_help(record, preview))
             else:
                 st.caption("Not scored yet")
 

@@ -78,7 +78,18 @@ def _save_call_details(index: int) -> None:
     else:
         updated = base
     applied[index]["call_notes"] = updated
-    storage.save_applied(applied)
+    try:
+        storage.save_applied(applied)
+    except OSError as exc:
+        # st.error() from inside a fragment-scoped on_click callback is a
+        # pattern Streamlit doesn't actually support: it renders at the top
+        # of the whole app behind this still-open dialog, not inside the
+        # fragment, so the user would likely never see it. Stash the
+        # message instead and let the fragment body render it below, on
+        # this same rerun, after this callback has already run.
+        st.session_state[f"call_notes_error_{index}"] = str(exc)
+        return
+    st.session_state.pop(f"call_notes_error_{index}", None)
     st.session_state[f"call_notes_{index}"] = updated
     st.session_state[f"new_call_notes_{index}"] = ""
 
@@ -117,6 +128,9 @@ def _call_notes_editor(index: int) -> None:
         key=f"call_notes_{index}",
         label_visibility="collapsed",
     )
+    error = st.session_state.pop(f"call_notes_error_{index}", None)
+    if error:
+        st.error(f"Could not save your call notes: {error}")
     st.button(
         "Save", key=f"save_call_details_{index}", type="primary", use_container_width=True,
         on_click=_save_call_details, args=(index,),

@@ -149,6 +149,31 @@ def test_save_call_details_updates_the_right_record():
     assert records[1]["call_notes"] == "Spoke with the recruiter, next step is a tech screen."
 
 
+def test_save_call_details_shows_an_error_when_saving_fails(monkeypatch):
+    # Confirms a save failure surfaces a visible error (rather than just
+    # silently discarding the user's typed note) and leaves "What happened"
+    # untouched so nothing typed is lost. Does NOT guard the specific bug
+    # fixed by stashing the message in session_state instead of calling
+    # st.error() directly from inside the on_click callback: AppTest doesn't
+    # model Streamlit's in-fragment-callback render-queue restriction, so
+    # this test passes identically whether or not that fix is in place -
+    # that part can only be confirmed by hand in a running app.
+    storage.save_applied([{"company": "Acme", "title": "Backend", "status": "Applied"}])
+
+    def fail_to_save(records):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(storage, "save_applied", fail_to_save)
+
+    at = AppTest.from_function(_render_call_notes_editor).run()
+    at.text_area(key="new_call_notes_0").set_value("Had a great call today.")
+    at = at.button(key="save_call_details_0").click().run()
+
+    assert not at.exception
+    assert any("disk full" in e.value for e in at.error)
+    assert at.text_area(key="new_call_notes_0").value == "Had a great call today."
+
+
 def test_save_call_details_prepends_new_entry_onto_full_history():
     storage.save_applied(
         [{"company": "Acme", "title": "Backend", "status": "Applied", "call_notes": "### 2026-11-01\nFirst screen, went well."}]

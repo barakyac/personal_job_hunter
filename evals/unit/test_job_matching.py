@@ -82,6 +82,24 @@ def test_extract_required_years_skips_a_lone_tech_specific_mention():
     assert job_matching.extract_required_years(text) is None
 
 
+@pytest.mark.parametrize("description,expected", [
+    # Regression test: "experience with/in/using <Capitalized word>" used
+    # to also count as tech-scoped, but whether the window around the
+    # match reached that capitalized word depended on which of
+    # _EXPERIENCE_YEARS_PATTERNS matched (one ends right after "years", the
+    # other after "experience") - these two differently-phrased postings
+    # used to disagree even though they ask for the same thing.
+    ("5+ years of experience with Python.", 5),
+    ("5 years of experience with Python.", 5),
+    # Capitalization is not a reliable signal that a phrase names a
+    # specific technology - an ordinary Title Case phrase at the start of
+    # a noun phrase used to be mistaken for one and silently dropped.
+    ("3+ years of experience in Backend development.", 3),
+])
+def test_extract_required_years_does_not_treat_a_capitalized_word_as_tech_scoped(description, expected):
+    assert job_matching.extract_required_years(description) == expected
+
+
 def _profile(**overrides):
     return {**storage.DEFAULT_MATCH_PROFILE, **overrides}
 
@@ -639,6 +657,48 @@ def test_apply_to_applied_jobs_forced_moves_the_saved_record_instead_of_duplicat
     assert storage.load_matched()[0]["match_status"] == storage.MATCH_STATUS_APPLIED
 
 
+def test_apply_to_applied_jobs_forced_does_not_remove_an_unrelated_postings_saved_record():
+    # Regression guard: the Saved-record lookup uses _find_corresponding
+    # (canonical-link-first, skipping a company+title match when both sides
+    # carry a real, differing link), not _find_index's plainer fallback
+    # (which just returns the first company+title match regardless of a
+    # conflicting link). Two Saved records can legitimately share a
+    # company+title - a distinct open role, or this same job saved without
+    # a link at all - and only the one with nothing to conflict with the
+    # job's own link may be removed.
+    job_matching.add_candidates([_job()], "src")
+    other_posting = {"company": "Acme", "title": "Backend Engineer", "link": "https://acme.example/jobs/999"}
+    this_posting_saved_without_a_link = {"company": "Acme", "title": "Backend Engineer", "link": ""}
+    storage.save_saved([other_posting, this_posting_saved_without_a_link])
+
+    assert job_matching.apply_to_applied_jobs(_job(), force=True) is True
+
+    assert storage.load_saved() == [other_posting]
+    assert len(storage.load_applied()) == 1
+
+
+def test_apply_to_applied_jobs_keeps_the_saved_record_when_saving_applied_fails(monkeypatch):
+    # Regression guard: forcing Saved -> Applied used to remove the Saved
+    # record, then write the Applied one - if that second write failed
+    # (disk full, permissions), the job vanished from both buckets with
+    # only the rolling backup to recover it from. Removing the Saved record
+    # now only happens after storage.save_applied has already succeeded.
+    job_matching.add_candidates([_job()], "src")
+    saved_record = {"company": "Acme", "title": "Backend Engineer", "link": "https://acme.example/jobs/1"}
+    storage.save_saved([saved_record])
+
+    def fail_to_save(records):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(storage, "save_applied", fail_to_save)
+
+    with pytest.raises(OSError):
+        job_matching.apply_to_applied_jobs(_job(), force=True)
+
+    assert storage.load_saved() == [saved_record]
+    assert storage.load_applied() == []
+
+
 def test_mark_status_from_reality_syncs_the_label_without_copying():
     job_matching.add_candidates([_job()], "src")
     storage.save_applied([{"company": "Acme", "title": "Backend Engineer", "link": "https://acme.example/jobs/1"}])
@@ -685,6 +745,25 @@ def test_score_matches_writes_scores_and_reports_errors(monkeypatch):
     assert errors == ["Broken: down"]
     scores = {r["company"]: r["fit_score"] for r in storage.load_matched()}
     assert scores == {"Acme": 9, "Broken": None}
+
+
+def test_score_matches_reports_an_error_when_the_record_is_gone_by_write_time(monkeypatch):
+    # Regression test: if a record is removed (dismissed, saved, applied -
+    # by the user or another process) between score_matches starting and
+    # this record's turn, the score just computed for it has nowhere to be
+    # written - this used to vanish with a silent `continue`, letting the
+    # caller's "Scored N of M" count (matches_view._score) treat it as
+    # scored even though nothing was actually saved for it.
+    storage.save_resume("Backend engineer, Python")
+    job_matching.add_candidates([_job()], "src")
+    target = storage.load_matched()[0]
+    monkeypatch.setattr(fit_analysis, "analyze", lambda resume, job, model=None: {"fit_score": 9, "fit_notes": "ok"})
+    storage.save_matched([])  # simulate the record disappearing mid-batch
+
+    errors = job_matching.score_matches([target])
+
+    assert len(errors) == 1 and "Acme" in errors[0]
+    assert storage.load_matched() == []
 
 
 def test_score_matches_needs_a_resume():

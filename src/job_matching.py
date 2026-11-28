@@ -46,9 +46,18 @@ _EXPERIENCE_PREFERENCE_MARKERS_RE = re.compile(
 _CLAUSE_SPLIT_RE = re.compile(r",\s*")
 # A years-of-experience mention near any of these is scoped to one named
 # technology, not the posting's overall requirement - "5+ years focused on
-# .NET Core/C#" is about .NET, not the role as a whole.
+# .NET Core/C#" is about .NET, not the role as a whole. Deliberately just
+# these two explicit phrases, not a general "experience with/in/using
+# <Capitalized word>" pattern: that used to also match ordinary, non-tech
+# capitalized phrases ("...experience in Backend development"), and its
+# window-boundary reach from the match varied depending on which of
+# _EXPERIENCE_YEARS_PATTERNS matched (whether the match ended at "years" or
+# at "experience"), so the same posting text could be scoped or not
+# depending on which pattern happened to fire - "5+ years of experience
+# with Python" and "5 years of experience with Python" used to disagree on
+# exactly this.
 _EXPERIENCE_TECH_SCOPE_MARKERS_RE = re.compile(
-    r"\bfocused on\b|\bspecifically (?:in|with)\b|\bexperience (?:with|in|using)\s+[A-Z]",
+    r"\bfocused on\b|\bspecifically (?:in|with)\b",
 )
 # Matches the shapes postings actually use for a required-years figure:
 # "5+ years", "3-5 years"/"3 to 5 years" (only the lower bound matters -
@@ -351,6 +360,31 @@ def _find_index(records: list[dict], record: dict) -> int | None:
     return None
 
 
+def _find_corresponding(records: list[dict], candidate: dict) -> int | None:
+    """Find the one record in `records` (a *different* list, e.g. Saved Jobs)
+    that corresponds to `candidate` - the same matching rule find_tracked()
+    uses, not _find_index()'s plainer company+title fallback. _find_index's
+    fallback would happily match any record sharing a company+title even
+    when it (or candidate) also carries a real link that points elsewhere -
+    fine for _find_index's own use (locating a record within its own list,
+    normally unique), but wrong across two lists where a second, unrelated
+    record can share that company+title. Also requires a non-empty
+    company+title, unlike _find_index, so two records with neither set don't
+    spuriously "match"."""
+    link = canonical_link(candidate.get("link", ""))
+    identity = _identity(candidate)
+    has_identity = all(identity)
+    for i, r in enumerate(records):
+        r_link = canonical_link(r.get("link", ""))
+        if link and r_link == link:
+            return i
+        if has_identity and _identity(r) == identity:
+            if link and r_link and r_link != link:
+                continue
+            return i
+    return None
+
+
 def apply_posting_check(record: dict, confirmed: str | None, checked_at: str) -> None:
     """Write the outcome of checking whether a posting is still open, in
     place on `record`. `confirmed` is "open", "closed", or None (the check
@@ -496,14 +530,17 @@ def apply_to_applied_jobs(record: dict, force: bool = False) -> bool:
     if where in ("saved", "applied") and not force:
         return False
 
+    saved, saved_idx = None, None
     if where == "saved":
         saved = storage.load_saved()
-        saved_idx = storage.find_record_index(
-            saved, match.get("company", ""), match.get("title", ""), match.get("link", "")
-        )
-        if saved_idx is not None:
-            saved.pop(saved_idx)
-            storage.save_saved(saved)
+        # _find_corresponding, not _find_index's plainer company+title
+        # fallback - see its own docstring for why. If the record
+        # find_tracked() just told us is "saved" can't actually be found
+        # here, stop rather than create a duplicate Applied record while
+        # leaving the real Saved one untouched.
+        saved_idx = _find_corresponding(saved, match)
+        if saved_idx is None:
+            return False
 
     applied = storage.load_applied()
     source_line = f"Found via {match.get('source', '')}"
@@ -532,6 +569,13 @@ def apply_to_applied_jobs(record: dict, force: bool = False) -> bool:
         "required_years_min": match.get("required_years_min"),
     })
     storage.save_applied(applied)
+    # Only remove the old Saved record once the Applied one is actually
+    # written and saved - doing this first (as an earlier version of this
+    # fix did) meant a failure writing Applied left the job in neither
+    # bucket, with only the rolling backup copy to recover it from.
+    if saved is not None:
+        saved.pop(saved_idx)
+        storage.save_saved(saved)
     records[idx]["match_status"] = storage.MATCH_STATUS_APPLIED
     storage.save_matched(records)
     return True
@@ -556,6 +600,13 @@ def score_matches(records_to_score: list[dict], on_progress=None, model: str = o
         records = storage.load_matched()
         idx = _find_index(records, target)
         if idx is None:
+            # Removed (dismissed, saved, applied...) by someone/something
+            # else between this batch starting and this record's turn - the
+            # score was computed but has nowhere to be written. Report it
+            # like any other failure so matches_view's "Scored N of M"
+            # count doesn't count this record as scored when nothing was
+            # actually saved for it.
+            errors.append(f"{target.get('company', '?')}: no longer in Matching Jobs - skipped")
             continue
         records[idx].update(result)
         storage.save_matched(records)

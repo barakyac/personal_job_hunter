@@ -104,7 +104,7 @@ filters and fit scoring.
    skipped (reported as `experience_unknown`) rather than guessed at either
    way. Whatever required-years figure it did extract is stamped onto the
    match as `required_years_min`, which the resume/posting fit score (step
-   10) then weighs explicitly and names in its evaluation notes - this
+   9's auto-score pass) then weighs explicitly and names in its evaluation notes - this
    changes nothing about how that score judges the resume itself.
 10. **Report** how many were added or skipped - already-tracked, excluded
     by keywords, outside the experience range, and experience-unclear are

@@ -111,8 +111,19 @@ def analyze_with_posting_text(
     via WebFetch, for sites a plain GET request can't reach)."""
     prompt = build_prompt(resume_text, job, posting_text)
     result = ollama_client.chat_json(SYSTEM_PROMPT, prompt, model=model)
+    score = result.get("score")
+    try:
+        if score is None or not (1 <= float(score) <= 10):
+            raise ValueError
+    except (TypeError, ValueError):
+        # A syntactically valid JSON object missing "score" (or carrying a
+        # non-numeric/out-of-range one) is still a malformed response - the
+        # prompt asked for an integer 1-10. Without this check, callers would
+        # silently store fit_score=None as if scoring had succeeded, instead
+        # of this one bad response reporting as the error it actually is.
+        raise ollama_client.OllamaError(f"Model response missing a valid \"score\" (1-10): {result!r}")
     return {
-        "fit_score": result.get("score"),
+        "fit_score": score,
         "fit_notes": result.get("notes", ""),
         "fit_matched": _join_items(result.get("matched")),
         "fit_required_gaps": _join_items(result.get("required_gaps")),
