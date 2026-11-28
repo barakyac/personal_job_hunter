@@ -313,6 +313,19 @@ def test_same_company_different_title_is_a_new_match():
     assert counts["added"] == 1
 
 
+def test_same_company_and_title_but_a_different_real_link_is_a_new_match():
+    # Regression guard: find_tracked() used to treat any company+title
+    # match as a certain duplicate, even when both postings carry a real,
+    # different link - silently dropping a second open role with the same
+    # title at the same company (the thing tracked_identities()'s own
+    # docstring says is only a "possible" duplicate, not a certain one).
+    job_matching.add_candidates([_job(link="https://acme.example/jobs/1")], "src")
+    counts = job_matching.add_candidates([_job(link="https://acme.example/jobs/2")], "src")
+    assert counts["added"] == 1
+    assert counts["already_tracked"] == 0
+    assert len(storage.load_matched()) == 2
+
+
 def test_dismissed_match_is_not_re_added():
     job_matching.add_candidates([_job()], "src")
     job_matching.set_status(_job(), storage.MATCH_STATUS_DISMISSED)
@@ -347,6 +360,17 @@ def test_exclude_keywords_do_not_match_an_incidental_description_mention():
 
 def test_candidate_without_company_or_link_is_invalid():
     counts = job_matching.add_candidates([{"title": "Engineer"}], "src")
+    assert counts["invalid"] == 1
+    assert storage.load_matched() == []
+
+
+def test_candidate_with_only_a_company_is_invalid():
+    # Regression guard: a candidate with a company but no title and no
+    # link used to be accepted. Two such candidates are indistinguishable
+    # to find_tracked()/_row_key (same empty identity, no link) - on the
+    # Matching Jobs page that collided into the same Streamlit widget key
+    # and crashed the whole page, rather than merely being unscoreable.
+    counts = job_matching.add_candidates([{"company": "Acme"}], "src")
     assert counts["invalid"] == 1
     assert storage.load_matched() == []
 
@@ -524,6 +548,42 @@ def test_update_posting_status_script_matches_a_canonically_equal_link():
     assert record["posting_status"] == storage.POSTING_STATUS_CLOSED
 
 
+def test_update_posting_status_script_updates_saved():
+    # The "saved" kind (shown as a worked example in the script's own
+    # docstring) had no coverage at all - unlike "matched", every other
+    # test here exercised.
+    storage.save_saved([{"company": "Acme", "title": "Backend Engineer", "link": "https://acme.example/jobs/1"}])
+    update_posting_status.main(["saved", "--company", "Acme", "--title", "Backend Engineer", "--result", "closed"])
+    [record] = storage.load_saved()
+    assert record["posting_status"] == storage.POSTING_STATUS_CLOSED
+    assert record["posting_checked_at"]
+
+
+def test_update_posting_status_script_unknown_never_overwrites_a_confirmed_status_for_saved(capsys):
+    storage.save_saved([{
+        "company": "Acme", "title": "Backend Engineer", "link": "https://acme.example/jobs/1",
+        "posting_status": storage.POSTING_STATUS_OPEN, "posting_checked_at": "2026-11-20",
+    }])
+    update_posting_status.main(["saved", "--company", "Acme", "--title", "Backend Engineer", "--result", "unknown"])
+    [record] = storage.load_saved()
+    assert record["posting_status"] == storage.POSTING_STATUS_OPEN
+    assert record["posting_checked_at"] == "2026-11-20"
+    assert "never overwrites" in capsys.readouterr().out
+
+
+def test_update_posting_status_script_refuses_to_guess_when_link_matches_nothing():
+    # Regression guard: a --link that doesn't match any tracked posting
+    # used to silently fall back to company(+title), which could stamp a
+    # company's *other* tracked posting with the result meant for an
+    # untracked one.
+    job_matching.add_candidates([_job(link="https://acme.example/jobs/1")], "src")
+    update_posting_status.main([
+        "matched", "--company", "Acme", "--link", "https://acme.example/jobs/999-different", "--result", "closed",
+    ])
+    [record] = storage.load_matched()
+    assert record["posting_status"] != storage.POSTING_STATUS_CLOSED
+
+
 # --- cross-bucket conflicts (Saved vs Applied) ------------------------------
 
 def test_tracked_elsewhere_reports_the_other_bucket():
@@ -548,12 +608,15 @@ def test_save_to_saved_jobs_does_not_copy_or_relabel_when_already_applied():
     assert storage.load_matched()[0]["match_status"] == storage.MATCH_STATUS_NEW
 
 
-def test_save_to_saved_jobs_forced_copies_anyway_despite_the_conflict():
+def test_save_to_saved_jobs_forced_refuses_an_applied_job_even_so():
+    # Regression guard: Applied -> Saved is a backward stage move. force=True
+    # must not be able to override that - only mark_status_from_reality()
+    # (sync the label, no copy) resolves this conflict.
     job_matching.add_candidates([_job()], "src")
     storage.save_applied([{"company": "Acme", "title": "Backend Engineer", "link": "https://acme.example/jobs/1"}])
-    assert job_matching.save_to_saved_jobs(_job(), force=True) is True
-    assert len(storage.load_saved()) == 1
-    assert storage.load_matched()[0]["match_status"] == storage.MATCH_STATUS_SAVED
+    assert job_matching.save_to_saved_jobs(_job(), force=True) is False
+    assert storage.load_saved() == []
+    assert storage.load_matched()[0]["match_status"] == storage.MATCH_STATUS_NEW
 
 
 def test_apply_to_applied_jobs_does_not_copy_or_relabel_when_already_saved():
@@ -564,11 +627,15 @@ def test_apply_to_applied_jobs_does_not_copy_or_relabel_when_already_saved():
     assert storage.load_matched()[0]["match_status"] == storage.MATCH_STATUS_NEW
 
 
-def test_apply_to_applied_jobs_forced_copies_anyway_despite_the_conflict():
+def test_apply_to_applied_jobs_forced_moves_the_saved_record_instead_of_duplicating():
+    # Regression guard: forcing Saved -> Applied used to leave the old
+    # Saved Jobs record in place while also adding an Applied one, so the
+    # same real job ended up tracked in both buckets at once.
     job_matching.add_candidates([_job()], "src")
     storage.save_saved([{"company": "Acme", "title": "Backend Engineer", "link": "https://acme.example/jobs/1"}])
     assert job_matching.apply_to_applied_jobs(_job(), force=True) is True
     assert len(storage.load_applied()) == 1
+    assert storage.load_saved() == []
     assert storage.load_matched()[0]["match_status"] == storage.MATCH_STATUS_APPLIED
 
 
@@ -583,6 +650,18 @@ def test_mark_status_from_reality_syncs_the_label_without_copying():
 def test_mark_status_from_reality_is_false_when_not_tracked_anywhere():
     job_matching.add_candidates([_job()], "src")
     assert job_matching.mark_status_from_reality(_job()) is False
+
+
+def test_set_status_rejects_an_unknown_status():
+    # Regression guard: set_status used to write any string straight into
+    # match_status with no validation against storage.MATCH_STATUS_OPTIONS
+    # - the never-backward/never-arbitrary invariant held only because of
+    # which call sites happened to use it, not because the function itself
+    # enforced anything.
+    job_matching.add_candidates([_job()], "src")
+    with pytest.raises(ValueError):
+        job_matching.set_status(_job(), "Not a real status")
+    assert storage.load_matched()[0]["match_status"] == storage.MATCH_STATUS_NEW
 
 
 # --- scoring ---------------------------------------------------------------
@@ -637,6 +716,11 @@ def test_gmail_alert_candidates_extracts_fields_and_link(monkeypatch):
 
 
 def test_gmail_alert_candidates_keeps_going_without_a_link(monkeypatch):
+    # Regression guard: a failed link lookup for one message (API error,
+    # malformed payload) used to be swallowed into the exact same `link ==
+    # ""` as a genuine "no link in this body", with no trace anywhere -
+    # the candidate still needs to be added (so one bad message doesn't
+    # stop the whole scan), but the failure must be reported, not hidden.
     monkeypatch.setattr(gmail_client, "search_messages",
                         lambda q, service=None, max_results=5: [{"id": "m1", "subject": "s", "snippet": ""}])
     monkeypatch.setattr(job_extract, "extract_opportunity_fields",
@@ -646,8 +730,9 @@ def test_gmail_alert_candidates_keeps_going_without_a_link(monkeypatch):
         raise RuntimeError("body read failed")
 
     monkeypatch.setattr(gmail_client, "get_message_link", boom)
-    candidates, _ = job_matching.gmail_alert_candidates(service=object())
+    candidates, errors = job_matching.gmail_alert_candidates(service=object())
     assert candidates[0]["link"] == ""
+    assert any("body read failed" in e for e in errors)
 
 
 def test_search_queries_combine_titles_and_keywords():
@@ -730,6 +815,17 @@ def test_search_jobs_api_error_raises(monkeypatch):
     monkeypatch.setenv(job_search_client.API_KEY_ENV_VAR, "k")
     monkeypatch.setattr(job_search_client.requests, "get", lambda *a, **k: _Resp({"error": "Invalid API key."}, 401))
     with pytest.raises(job_search_client.JobSearchError, match="Invalid API key"):
+        job_search_client.search_jobs("backend")
+
+
+def test_search_jobs_rejects_a_non_object_payload(monkeypatch):
+    # Regression guard: valid JSON that parses to a non-dict (a bare list,
+    # here) used to reach payload.get("error") and raise an unhandled
+    # AttributeError instead of JobSearchError - crashing the whole
+    # Matching Jobs page instead of showing a per-query st.warning.
+    monkeypatch.setenv(job_search_client.API_KEY_ENV_VAR, "k")
+    monkeypatch.setattr(job_search_client.requests, "get", lambda *a, **k: _Resp(["unexpected", "list"]))
+    with pytest.raises(job_search_client.JobSearchError):
         job_search_client.search_jobs("backend")
 
 

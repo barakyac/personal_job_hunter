@@ -90,9 +90,11 @@ def _identity(record: dict) -> tuple[str, str]:
 
 def find_tracked(candidate: dict, matched: list[dict] | None = None) -> str | None:
     """Where this candidate already lives: "saved", "applied", "matched", or
-    None. Matches by canonical link first, then by company + title (a
-    company alone isn't enough - one company often has several open roles
-    worth seeing separately)."""
+    None. Matches by canonical link first, then by company + title - but
+    only when at least one side has no link to go by. Two records that each
+    carry a real, different link are two distinct postings (one company can
+    have several open roles with the same title), not a duplicate of each
+    other, however alike their company+title look."""
     link = canonical_link(candidate.get("link", ""))
     identity = _identity(candidate)
     has_identity = all(identity)
@@ -103,9 +105,12 @@ def find_tracked(candidate: dict, matched: list[dict] | None = None) -> str | No
     ]
     for where, records in groups:
         for r in records:
-            if link and canonical_link(r.get("link", "")) == link:
+            r_link = canonical_link(r.get("link", ""))
+            if link and r_link == link:
                 return where
             if has_identity and _identity(r) == identity:
+                if link and r_link and r_link != link:
+                    continue
                 return where
     return None
 
@@ -292,7 +297,11 @@ def add_candidates(candidates: list[dict], source: str, profile: dict | None = N
     unscored just because no one has clicked "Score fit" yet. Returns
     counts: {"added": n, "already_tracked": n, "filtered": n, "invalid": n,
     "experience_filtered": n, "experience_unknown": n, "score_errors": [...]}.
-    A candidate needs at least a company or a link to be kept."""
+    A candidate needs a company plus either a title or a link to be kept -
+    a company with neither has nothing find_tracked()/_row_key can key off
+    of, so two such candidates would be indistinguishable from each other
+    (a duplicate Streamlit widget key, crashing the whole page) rather than
+    merely unscoreable."""
     profile = profile if profile is not None else storage.load_match_profile()
     matched = storage.load_matched()
     counts = {
@@ -301,7 +310,9 @@ def add_candidates(candidates: list[dict], source: str, profile: dict | None = N
     }
     added_records = []
     for raw in candidates:
-        if not (raw.get("company") or "").strip() and not (raw.get("link") or "").strip():
+        has_company = bool((raw.get("company") or "").strip())
+        has_identity_field = bool((raw.get("title") or "").strip()) or bool((raw.get("link") or "").strip())
+        if not has_company or not has_identity_field:
             counts["invalid"] += 1
             continue
         if find_tracked(raw, matched):
@@ -359,6 +370,8 @@ def apply_posting_check(record: dict, confirmed: str | None, checked_at: str) ->
 
 
 def set_status(record: dict, status: str) -> bool:
+    if status not in storage.MATCH_STATUS_OPTIONS:
+        raise ValueError(f"Unknown match status: {status!r}")
     records = storage.load_matched()
     idx = _find_index(records, record)
     if idx is None:
@@ -410,7 +423,13 @@ def save_to_saved_jobs(record: dict, force: bool = False) -> bool:
     posting is already tracked (Saved or Applied) and `force` isn't set -
     the caller must have checked tracked_elsewhere() first and let the
     user decide, via mark_status_from_reality() or force=True, rather than
-    this guessing on its own."""
+    this guessing on its own.
+
+    A posting already tracked as Applied is never copied here, even with
+    force=True: Applied -> Saved is a backward stage move (the user is
+    further along than "merely saved"), and nothing should be able to
+    force that - mark_status_from_reality() is the only way to resolve
+    that conflict."""
     records = storage.load_matched()
     idx = _find_index(records, record)
     if idx is None:
@@ -418,7 +437,9 @@ def save_to_saved_jobs(record: dict, force: bool = False) -> bool:
     match = records[idx]
     others = [r for i, r in enumerate(records) if i != idx]
     where = find_tracked(match, matched=others)
-    if where in ("saved", "applied") and not force:
+    if where == "applied":
+        return False
+    if where == "saved" and not force:
         return False
 
     saved = storage.load_saved()
@@ -459,7 +480,12 @@ def apply_to_applied_jobs(record: dict, force: bool = False) -> bool:
     mark the match Applied. Writes and changes nothing, returning False,
     when the posting is already tracked (Saved or Applied) and `force`
     isn't set - see save_to_saved_jobs for why this doesn't guess on its
-    own which bucket is right."""
+    own which bucket is right.
+
+    Forcing from "saved" moves the existing Saved Jobs record rather than
+    copying it - Saved -> Applied is a forward move for one real job, not
+    two separate tracked postings, so the old Saved record is removed once
+    the Applied one exists."""
     records = storage.load_matched()
     idx = _find_index(records, record)
     if idx is None:
@@ -469,6 +495,15 @@ def apply_to_applied_jobs(record: dict, force: bool = False) -> bool:
     where = find_tracked(match, matched=others)
     if where in ("saved", "applied") and not force:
         return False
+
+    if where == "saved":
+        saved = storage.load_saved()
+        saved_idx = storage.find_record_index(
+            saved, match.get("company", ""), match.get("title", ""), match.get("link", "")
+        )
+        if saved_idx is not None:
+            saved.pop(saved_idx)
+            storage.save_saved(saved)
 
     applied = storage.load_applied()
     source_line = f"Found via {match.get('source', '')}"
@@ -554,7 +589,16 @@ def gmail_alert_candidates(
             link = gmail_client.get_message_link(
                 msg["id"], service=service, company=fields["company"], title=fields["title"]
             )
-        except Exception:
+        except Exception as exc:
+            # A real failure reading/parsing this one message (expired
+            # token, rate limit, a malformed payload) - not the same as
+            # get_message_link's own "no link found in this body" (which
+            # it returns as "", not an exception). One bad message must
+            # not stop the whole scan, but swallowing this into the same
+            # "" as a genuine non-match - with no trace anywhere - used to
+            # leave a card with a dead "Open posting" button and no
+            # indication anything went wrong. Report it instead.
+            errors.append(f"{msg['subject']}: {exc}")
             link = ""
         candidates.append({**fields, "link": link, "source_detail": msg["subject"]})
     return candidates, errors

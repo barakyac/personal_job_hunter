@@ -32,15 +32,20 @@ def _find_index(records: list[dict], company: str, title: str, link: str) -> int
     """Same contract as storage.find_record_index, but link-matching is
     canonical first - a plain `==` would miss a Gmail tracking-param link
     (e.g. ".../comm/jobs/view/123?trackingId=...") against the canonical
-    form list_tracked.py itself prints and the skill is told to pass,
-    silently falling back to company(+title) and risking a match against
-    the wrong record when a company has more than one posting."""
+    form list_tracked.py itself prints and the skill is told to pass.
+
+    When a --link was given but matches nothing, this does NOT fall back
+    to company(+title): a link means the caller believes this points at
+    one specific tracked posting, and falling back on a mismatch risks
+    silently stamping a company's other posting instead. Only when no
+    link was passed at all does company(+title) get used."""
     if link:
         target = job_matching.canonical_link(link)
         if target:
             for i, r in enumerate(records):
                 if job_matching.canonical_link(r.get("link", "")) == target:
                     return i
+            return None
     return storage.find_record_index(records, company, title, "")
 
 

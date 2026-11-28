@@ -87,6 +87,8 @@ def search_jobs(query: str, location: str = "", timeout: int = 20) -> list[dict]
         payload = resp.json()
     except ValueError as exc:
         raise JobSearchError(f"SerpAPI returned a non-JSON response (HTTP {resp.status_code}).") from exc
+    if not isinstance(payload, dict):
+        raise JobSearchError(f"SerpAPI returned {type(payload).__name__}, expected a JSON object.")
     if payload.get("error"):
         # "Google hasn't returned any results for this query." is an empty
         # result set, not a failure.

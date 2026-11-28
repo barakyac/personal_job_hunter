@@ -193,6 +193,25 @@ def test_same_bucket_conflict_dialog_does_not_offer_to_create_a_duplicate():
     assert len(storage.load_applied()) == 1
 
 
+def test_conflict_dialog_never_offers_to_force_save_an_applied_match_back_to_saved():
+    # Regression test (Critical): "High" is already in Applied Positions.
+    # Clicking "Save job" on the Matching Jobs card used to offer "Also add
+    # it to Saved Jobs", which would copy an in-flight application back
+    # into Saved Jobs - a backward stage move. That force option must
+    # never be shown for this direction, only the label-sync option.
+    _seed()
+    storage.save_applied([{"company": "High", "title": "Backend", "link": "https://high.example"}])
+
+    at = AppTest.from_function(_render).run()
+    save_btn = next(b for b in at.button if b.key and b.key.startswith("match_save_"))
+    at = save_btn.click().run()
+
+    assert not at.exception
+    assert not any(b.label == "Also add it to Saved Jobs" for b in at.button)
+    assert any("would move it backward" in c.value for c in at.caption)
+    assert storage.load_saved() == []
+
+
 def test_dismiss_button_hides_match():
     _seed()
     at = AppTest.from_function(_render).run()

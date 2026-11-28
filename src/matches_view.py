@@ -61,30 +61,53 @@ def _conflict_dialog(record: dict, where: str, intent: str) -> None:
     would then create an actual second Applied record for one real job, not
     resolve anything - so that option is only offered for a genuine
     cross-bucket conflict (where != target); the same-bucket case only
-    offers syncing this record's own label to match reality."""
+    offers syncing this record's own label to match reality.
+
+    Applied -> Saved (where == "applied", intent == "save") is never
+    offered as a force option either, even though it's a genuine
+    cross-bucket conflict: it would move the posting backward (the user is
+    further along than "merely saved"), which save_to_saved_jobs itself
+    also refuses to do regardless of force - see its docstring."""
     bucket = "Saved Jobs" if where == "saved" else "Applied Positions"
     target = "Saved Jobs" if intent == "save" else "Applied Positions"
     key = _row_key(record)
+    not_found_msg = "Couldn't find this match anymore - it may have been removed."
     st.write(
         f"**{record.get('company') or 'This job'} - {record.get('title') or 'Untitled'}** is already in "
         f"**{bucket}**."
     )
     if st.button(f"Keep it in {bucket} (just fix the label here)", key=f"conflict_sync_{key}",
                  use_container_width=True):
-        job_matching.mark_status_from_reality(record)
-        st.rerun()
+        if job_matching.mark_status_from_reality(record):
+            st.rerun()
+        else:
+            st.error(not_found_msg)
     if bucket == target:
         st.caption(f"It's already in {bucket}, so adding it again would just create a duplicate record there.")
+    elif where == "applied" and intent == "save":
+        st.caption(
+            f"It's already in {bucket} - adding it to {target} would move it backward, so that's not offered here."
+        )
     elif st.button(f"Also add it to {target}", key=f"conflict_force_{key}", use_container_width=True):
         if intent == "save":
-            job_matching.save_to_saved_jobs(record, force=True)
+            ok = job_matching.save_to_saved_jobs(record, force=True)
         else:
-            job_matching.apply_to_applied_jobs(record, force=True)
-        st.rerun()
+            ok = job_matching.apply_to_applied_jobs(record, force=True)
+        if ok:
+            st.rerun()
+        else:
+            st.error(not_found_msg)
 
 
 def _row_key(record: dict) -> str:
-    basis = job_matching.canonical_link(record.get("link", "")) or "|".join(job_matching._identity(record))
+    """A stable widget-key suffix for this record. Falls back past the
+    canonical link to company+title+date_found+source_detail, not just
+    company+title - two distinct postings can legitimately share a company
+    and title (find_tracked() allows that when they have different links),
+    and two identical basis strings here would collide into the same
+    Streamlit widget key and crash the whole page."""
+    identity_bits = [*job_matching._identity(record), record.get("date_found", ""), record.get("source_detail", "")]
+    basis = job_matching.canonical_link(record.get("link", "")) or "|".join(identity_bits)
     return hashlib.md5(basis.encode("utf-8")).hexdigest()[:12]
 
 
@@ -352,30 +375,36 @@ def _render_card(record: dict) -> None:
                         conflict = job_matching.tracked_elsewhere(record)
                         if conflict:
                             _conflict_dialog(record, conflict, "save")
-                        else:
-                            job_matching.save_to_saved_jobs(record)
+                        elif job_matching.save_to_saved_jobs(record):
                             st.toast(f"Saved {record.get('company') or 'job'} to Saved Jobs.")
                             st.rerun()
+                        else:
+                            st.error("Couldn't find this match anymore - it may have been removed.")
             with apply_col:
                 if status == storage.MATCH_STATUS_NEW:
                     if st.button("Add to Applications", key=f"match_apply_{key}", type="primary"):
                         conflict = job_matching.tracked_elsewhere(record)
                         if conflict:
                             _conflict_dialog(record, conflict, "apply")
-                        else:
-                            job_matching.apply_to_applied_jobs(record)
+                        elif job_matching.apply_to_applied_jobs(record):
                             st.toast(f"Added {record.get('company') or 'job'} to Applied Positions.")
                             st.rerun()
+                        else:
+                            st.error("Couldn't find this match anymore - it may have been removed.")
             with dismiss_col:
                 if status == storage.MATCH_STATUS_DISMISSED:
                     if st.button("", key=f"match_restore_{key}", icon=":material/restore:",
                                  help="Restore to New"):
-                        job_matching.set_status(record, storage.MATCH_STATUS_NEW)
-                        st.rerun()
+                        if job_matching.set_status(record, storage.MATCH_STATUS_NEW):
+                            st.rerun()
+                        else:
+                            st.error("Couldn't find this match anymore - it may have been removed.")
                 elif status == storage.MATCH_STATUS_NEW:
                     if st.button("", key=f"match_dismiss_{key}", icon=":material/close:", help="Dismiss"):
-                        job_matching.set_status(record, storage.MATCH_STATUS_DISMISSED)
-                        st.rerun()
+                        if job_matching.set_status(record, storage.MATCH_STATUS_DISMISSED):
+                            st.rerun()
+                        else:
+                            st.error("Couldn't find this match anymore - it may have been removed.")
 
 
 def _render_header(profile: dict, unscored: list[dict]) -> None:
